@@ -23,6 +23,11 @@
 
 ### 新增
 
+- **上传时选定的密级可靠落定**：新增 `archive.pending_classification` 暂存表
+  （`migrations/003_pending_classification.sql`），上传时按原始文件 sha256 暂存用户选定的密级；
+  Paperless 的 `documents_document.checksum` 即原始文件 sha256，回调拿到真实 doc_id 后回查
+  并落定密级（Paperless 的 REST 文档详情不暴露 `checksum`，故走数据库直查）。暂存记录
+  24 小时未落定即清理；查不到时仍取默认「内部(1)」，比「公开(0)」保守，符合 fail-closed 取向
 - `webserver` 服务注入 `GATEWAY_URL` 与 `INTERNAL_TOKEN`，打通采集回调链路
 - 索引器新增 `reconcile_missing` 周期兜底：自动为漏登记密级的档案补齐密级与增量索引
 - post-consume 失败诊断改写 stderr，可被 Paperless 消费日志捕获
