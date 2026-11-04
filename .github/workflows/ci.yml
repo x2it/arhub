@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: 单元测试与语法检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: 安装依赖
+        run: pip install -r requirements-gateway.txt pytest
+      - name: 语法编译
+        run: python -m compileall -q gateway semantic shared scripts
+      - name: 单元测试
+        run: python -m pytest tests/unit -q
+
+  frontend:
+    name: 前端类型检查与构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: 安装依赖
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: 构建
+        working-directory: frontend
+        run: pnpm build
+
+  compose:
+    name: 编排配置校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 用示例配置解析 compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+  compliance:
+    name: 开源合规自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 无密钥 / 无私有链接 / 无本机绝对路径
+        run: bash scripts/preflight-opensource.sh

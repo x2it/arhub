@@ -1,0 +1,25 @@
+# semantic/indexer：含 torch CPU + sentence-transformers（镜像 ~2GB）
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HUB_OFFLINE=1 \
+    HF_HOME=/hf-cache
+
+WORKDIR /app
+COPY requirements-semantic.txt .
+# torch CPU 走官方 whl 源（~190MB，远小于 CUDA 版）
+RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu \
+ && pip install --no-cache-dir -r requirements-semantic.txt
+
+COPY shared/ ./shared/
+COPY semantic/ ./semantic/
+
+RUN useradd -r -u 1000 appuser && mkdir -p /hf-cache /data && chown -R appuser:appuser /app /hf-cache /data
+USER appuser
+
+EXPOSE 8600
+HEALTHCHECK --interval=20s --timeout=5s --start-period=120s --retries=10 \
+  CMD python -c "import urllib.request;urllib.request.urlopen('http://localhost:8600/health',timeout=5)"
+
+CMD ["uvicorn", "semantic.app:app", "--host", "0.0.0.0", "--port", "8600", "--workers", "1"]

@@ -1,0 +1,226 @@
+name: archive-stack
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ---------- 数据层 ----------
+  db:
+    image: ${PG_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-archive}
+      POSTGRES_USER: ${POSTGRES_USER:-archive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    volumes:
+      # 命名卷而非 bind mount：部分环境下 bind mount 存在 uid 属主漂移，
+      # 导致 PG 以 postgres(70) 启动后无法读取自己新建的 1000:1000 文件。
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    command: ["postgres", "-c", "max_connections=200"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-archive} -d ${POSTGRES_DB:-archive}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [internal]
+    logging: *default-logging
+    stop_grace_period: 30s
+
+  broker:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [internal]
+    logging: *default-logging
+
+  # ---------- 档案主干（Paperless-ngx：采集/OCR/档号/全文检索/PDF-A）----------
+  webserver:
+    image: ${PAPERLESS_IMAGE:-ghcr.io/paperless-ngx/paperless-ngx:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    volumes:
+      - ./data:/usr/src/paperless/data
+      - ./media:/usr/src/paperless/media
+      - ./consume:/usr/src/paperless/consume
+      - ./export:/usr/src/paperless/export
+      # 官方镜像不带中文 OCR 包，单文件只读挂载
+      - ./tessdata/chi_sim.traineddata:/usr/share/tesseract-ocr/5/tessdata/chi_sim.traineddata:ro
+      # 采集回调：OCR 完成后通知网关自动建语义索引
+      - ./scripts/post-consume.sh:/usr/src/paperless/scripts/post-consume.sh:ro
+    environment:
+      PAPERLESS_REDIS: redis://broker:6379
+      # 生产：PostgreSQL（替代原型 SQLite）
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBPORT: 5432
+      PAPERLESS_DBNAME: ${PAPERLESS_DBNAME:-archive}
+      PAPERLESS_DBUSER: ${PAPERLESS_DBUSER:-archive}
+      PAPERLESS_DBPASS: ${PAPERLESS_DBPASS:?PAPERLESS_DBPASS required}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?required}
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
+      PAPERLESS_TIME_ZONE: Asia/Shanghai
+      PAPERLESS_OCR_LANGUAGE: chi_sim+eng
+      PAPERLESS_OCR_LANGUAGES: chi_sim eng
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER:-admin}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD:?required}
+      PAPERLESS_ADMIN_EMAIL: ${PAPERLESS_ADMIN_EMAIL:-admin@archive.local}
+      PAPERLESS_FILENAME_FORMAT: "{{ created_year }}/{{ correspondent }}/{{ title }}"
+      # 安全：非 root 运行（原 USERMAP_UID/GID=0）
+      USERMAP_UID: 1000
+      USERMAP_GID: 1000
+      # OCR 完成回调网关 → 自动增量语义索引（阶段5）
+      PAPERLESS_POST_CONSUME_SCRIPT: /usr/src/paperless/scripts/post-consume.sh
+    # 安全边界：不映射宿主端口，仅容器网络可达，绕过网关直连被物理关闭
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:8000/api/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+    stop_grace_period: 30s
+
+  # ---------- 自研：语义检索（常驻内存向量 + 内部 Token）----------
+  semantic:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.semantic
+    image: archive-semantic:2.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: &semantic-env
+      PAPERLESS_URL: http://webserver:8000
+      DB_DSN: postgresql://${POSTGRES_USER:-archive}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-archive}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?required}
+      VECTOR_BACKEND: ${VECTOR_BACKEND:-pg}
+      DATA_DIR: /data
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-zh-v1.5}
+      HF_HUB_OFFLINE: "1"
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HOME: /hf-cache
+    volumes:
+      - ./hf-cache:/hf-cache
+      - ./data:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8600/health',timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+          cpus: "4"
+    stop_grace_period: 20s
+
+  # ---------- 自研：索引流水线 worker（encode 从 HTTP 进程剥离）----------
+  indexer:
+    image: archive-semantic:2.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "semantic.worker"]
+    environment: *semantic-env
+    volumes:
+      - ./hf-cache:/hf-cache
+      - ./data:/data
+    networks: [internal]
+    # worker 不监听端口，健康判定改为「进程存活」；真正进度看 index_tasks / stats
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; os.kill(int(open('/proc/1/cmdline').read().split(chr(0))[0]) if False else 1, 0); sys.exit(0 if any('semantic.worker' in open(f'/proc/{p}/cmdline').read() for p in os.listdir('/proc') if p.isdigit()) else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+          cpus: "4"
+
+  # ---------- 接入层：唯一对外入口 ----------
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    image: archive-gateway:2.0
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      webserver:
+        condition: service_healthy
+      semantic:
+        condition: service_healthy
+    ports:
+      - "${GATEWAY_PORT:-8700}:8700"
+    environment:
+      PAPERLESS_URL: http://webserver:8000
+      SEMANTIC_URL: http://semantic:8600
+      # 引导期用于换取 Paperless API Token，并落库 archive.sys_config 供 indexer 复用
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER:-admin}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD:?required}
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN:-}
+      DATA_DIR: /srv/data
+      DB_DSN: postgresql://${POSTGRES_USER:-archive}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-archive}
+      REDIS_URL: redis://broker:6379/1
+      JWT_SECRET: ${JWT_SECRET:?required}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?required}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-100}
+      RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-600}
+      TENANT_ID: ${TENANT_ID:-default}
+      STATIC_DIR: /srv/static
+    volumes:
+      # 前端 dist 同源托管（宿主机构建，容器不含 Node）
+      - ./frontend/dist:/srv/static:ro
+      - ./data:/srv/data
+      # 管理员备份端点产物 + media 归档备份
+      - ./backups:/srv/data/backups
+      - ./media:/srv/media:ro
+      - ./consume:/srv/consume:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8700/health',timeout=5)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [internal]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2"
+    stop_grace_period: 20s
+
+volumes:
+  redisdata:
+  pgdata:
+
+networks:
+  internal:
+    driver: bridge

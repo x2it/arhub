@@ -1,0 +1,11 @@
+--index-url https://pypi.tuna.tsinghua.edu.cn/simple
+torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers==3.3.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+psycopg[binary,pool]==3.2.3
+numpy==2.2.1
+prometheus-client==0.21.1

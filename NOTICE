@@ -1,0 +1,61 @@
+档枢 ArcHub (ArcHub)
+Copyright 2026 知行工作室 (Zhixing Studio)
+
+本仓库中的自研代码（gateway/、semantic/、shared/、frontend/、scripts/、migrations/、
+docker/、tests/ 及编排与文档）以 Apache License 2.0 授权，详见 LICENSE。
+
+================================================================================
+第三方组件
+================================================================================
+
+本仓库**不包含**下列组件的源代码副本。它们在部署时通过容器镜像、包管理器或模型仓库
+获取，各自适用其原始许可证；下表仅为便利索引，一切以各项目官方声明为准。
+
+运行时服务（通过 docker-compose 引用的官方镜像）
+  Paperless-ngx .................. GPL-3.0-or-later
+  PostgreSQL 16 .................. PostgreSQL License
+  Redis 7 ........................ BSD-3-Clause
+  Tesseract OCR + chi_sim 语言数据 . Apache-2.0（tessdata 以其仓库声明为准）
+
+Python 依赖（requirements-gateway.txt / requirements-semantic.txt）
+  FastAPI / Starlette / Pydantic . MIT
+  Uvicorn / httpx / numpy ........ BSD-3-Clause
+  python-jose .................... MIT
+  bcrypt (pyca) .................. Apache-2.0
+  psycopg 3 ...................... LGPL-3.0-or-later
+  redis-py / pydantic-settings ... MIT
+  python-multipart / prometheus-client / Pillow / OpenCV . 各自官方许可证
+  torch .......................... BSD-3-Clause
+  sentence-transformers .......... Apache-2.0
+
+前端依赖（frontend/package.json）
+  Vue 3 / Vue Router / Vite ...... MIT
+  TypeScript ..................... Apache-2.0
+  vue-tsc / @vitejs/plugin-vue ... MIT
+
+模型权重（运行时按需下载，不随本仓库分发）
+  BAAI/bge-small-zh-v1.5 ........ MIT（以模型卡页声明为准）
+  下载源默认 Hugging Face 镜像，可在 .env 中通过 HF_ENDPOINT / EMBED_MODEL 替换。
+
+================================================================================
+许可边界说明（重要）
+================================================================================
+
+Paperless-ngx 以 GPL-3.0-or-later 授权。本仓库仅通过 `docker-compose.yml` 引用其官方
+容器镜像，作为**独立进程**经 REST API 交互；未复制、修改、链接其源码，也未将其代码
+并入本仓库。按 GPL 对「mere aggregation（单纯聚合）」的处理，本仓库自研代码的
+Apache-2.0 授权不受影响。
+
+若你把本仓库与 Paperless-ngx 组合成一个整体对外分发，请自行评估并履行 GPL-3.0
+项下义务（随附其源码获取途径、保留其许可证与版权声明等）。本声明不构成法律意见。
+
+================================================================================
+商标与演示数据
+================================================================================
+
+「档枢」「ArcHub」名称、标识与视觉资产（frontend/public/favicon.svg、
+frontend/src/components/BrandMark.vue、配色方案）不随 Apache-2.0 授予商标使用权；
+Apache-2.0 第 6 节关于商标的规定适用。Fork 时请更换品牌标识，避免误导来源。
+
+samples/、export/、media/ 中的演示档案由 scripts/make_samples.py 生成的虚构样例，
+不含真实个人信息或真实机构文件。

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（私下报告）
+    url: https://github.com/x2it/arhub/security/advisories/new
+    about: 请勿公开提交安全漏洞，参见仓库 SECURITY.md
+  - name: 部署与配置问题
+    url: https://github.com/x2it/arhub/blob/main/DEPLOY.md
+    about: 先看部署手册与 AGENTS.md；仍有疑问请用缺陷报告 / 功能建议模板开 Issue

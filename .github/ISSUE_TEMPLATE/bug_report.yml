@@ -1,0 +1,60 @@
+name: 缺陷报告
+description: 报告一个可复现的功能缺陷或异常行为
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先确认不是部署配置问题（可参考 DEPLOY.md 的故障排查表）。
+        **安全漏洞请勿在此提交**，请走 SECURITY.md 的私下渠道。
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: 如 v2.0.0 或 commit hash
+      placeholder: v2.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: env
+    attributes:
+      label: 部署形态
+      options:
+        - 单机 Docker Compose（scripts/up.sh）
+        - 自行编排的容器栈
+        - 其他（在补充说明里描述）
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 1. … 2. … 3. …；请勿粘贴真实档案内容或密钥
+      placeholder: |
+        1. 登录 admin
+        2. 调用 /api/v1/search?mode=...
+        3. 观察到 …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 / 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 贴 `docker compose logs --tail=50 <service>` 或 /ready 输出，记得抹掉口令、Token、IP
+      render: shell
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 确认
+      options:
+        - label: 我已搜索现有 Issue，确认不是重复报告
+          required: true
+        - label: 日志与描述中不含任何密钥、Token 或真实档案数据
+          required: true
