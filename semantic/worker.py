@@ -143,6 +143,19 @@ async def reconcile_missing() -> int:
     return len(missing)
 
 
+def cleanup_pending_classification() -> None:
+    """清理超过 24 小时仍未落定的暂存密级记录（上传失败/文档被删的残留）。"""
+    try:
+        with get_pg() as conn:
+            n = conn.execute(
+                "DELETE FROM archive.pending_classification"
+                " WHERE created_at < now() - interval '24 hours'").rowcount
+        if n:
+            log.info("清理过期暂存密级 %s 条", n)
+    except Exception as e:  # noqa: BLE001
+        log.warning("清理暂存密级失败: %s", e)
+
+
 async def main() -> None:
     setup_logging()
     log.info("indexer worker 启动 poll=%ss", POLL_SECONDS)
@@ -166,6 +179,7 @@ async def main() -> None:
             if time.monotonic() - last_reconcile >= RECONCILE_SECONDS:
                 last_reconcile = time.monotonic()
                 await reconcile_missing()
+                cleanup_pending_classification()
         except Exception:
             log.exception("worker 循环异常")
         await asyncio.sleep(POLL_SECONDS)

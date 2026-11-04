@@ -597,6 +597,15 @@ async def upload(
     payload = b"".join(chunks)
     content_sha = hashlib.sha256(payload).hexdigest()
     key = idem_key or content_sha
+    # 暂存「用户选定的密级 → 原始文件 sha256」。Paperless 的 post_document 返回任务
+    # UUID 而非数字 doc_id，此刻还不知道密级该挂到哪个文档上；等 post-consume 回调带回
+    # 真实 doc_id 后，用 Paperless 的 checksum（即本文件 sha256）回查并落定。
+    with get_pg() as conn:
+        conn.execute(
+            "INSERT INTO archive.pending_classification(content_sha,classification)"
+            " VALUES (%s,%s) ON CONFLICT (content_sha)"
+            " DO UPDATE SET classification=EXCLUDED.classification",
+            (content_sha, classification))
     with get_pg() as conn:
         row = conn.execute("SELECT doc_id FROM archive.upload_idem WHERE idem_key=%s",
                            (key,)).fetchone()
@@ -665,6 +674,44 @@ async def upload(
 
 
 # ================= 索引（内部回调 + 兼容入口）=================
+async def resolve_uploaded_classification(doc_id: int) -> int:
+    """回查上传时暂存的密级，落定到真实 doc_id 上。
+
+    Paperless 与自研表同处一个 PostgreSQL（schema archive），其
+    documents_document.checksum 即上传原始文件的 sha256，与上传接口暂存的 key 同源，
+    因此可直接回查用户当时选择的密级。Paperless 的 REST 文档详情并不暴露 checksum
+    字段，故这里走数据库直查而非上游 API。
+
+    查不到则取默认「内部(1)」——比「公开(0)」更保守，符合 fail-closed 的默认取向。
+    """
+    try:
+        with get_pg() as conn:
+            row = conn.execute(
+                "SELECT checksum FROM archive.documents_document WHERE id=%s",
+                (doc_id,)).fetchone()
+        checksum = row[0] if row and row[0] else None
+    except Exception as e:  # noqa: BLE001
+        log.warning("回查上传密级失败（取默认内部）doc_id=%s: %s", doc_id, e)
+        return 1
+    if not checksum:
+        return 1
+    try:
+        with get_pg() as conn:
+            row = conn.execute(
+                "SELECT classification FROM archive.pending_classification"
+                " WHERE content_sha=%s", (checksum,)).fetchone()
+        if row:
+            with get_pg() as conn:
+                conn.execute(
+                    "DELETE FROM archive.pending_classification WHERE content_sha=%s",
+                    (checksum,))
+            log.info("落定上传密级 doc_id=%s classification=%s", doc_id, row[0])
+            return int(row[0])
+    except Exception as e:  # noqa: BLE001
+        log.warning("读取暂存密级失败（取默认内部）doc_id=%s: %s", doc_id, e)
+    return 1
+
+
 @app.post("/internal/index")
 async def internal_index(request: Request):
     """Paperless post-consume 回调入口（X-Internal-Token 保护）。"""
@@ -672,16 +719,17 @@ async def internal_index(request: Request):
         raise HTTPException(status_code=403, detail="内部接口拒绝访问")
     body = await request.json()
     doc_id, op = int(body["doc_id"]), body.get("op", "upsert")
+    # 入库即登记密级（fail-closed 前提：每份档案必有密级记录，默认内部=1）。
+    # 不依赖索引器异步回填，避免「OCR 完成、索引成功，却检索不到」。
+    level = await resolve_uploaded_classification(doc_id)
     with get_pg() as conn:
-        # 入库即登记密级（fail-closed 前提：每份档案必有密级记录，默认内部=1）。
-        # 不依赖索引器异步回填，避免「OCR 完成、索引成功，却检索不到」。
         conn.execute(
             "INSERT INTO archive.doc_security(doc_id,classification,owner_dept,tenant_id)"
             " VALUES (%s,%s,%s,%s) ON CONFLICT (doc_id) DO NOTHING",
-            (doc_id, 1, None, s.tenant_id))
+            (doc_id, level, None, s.tenant_id))
         conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,%s)",
                      (doc_id, op))
-    return {"status": "accepted", "doc_id": doc_id, "op": op}
+    return {"status": "accepted", "doc_id": doc_id, "op": op, "classification": level}
 
 
 @app.post("/api/v1/index/{doc_id}", response_model=TaskAccepted)
