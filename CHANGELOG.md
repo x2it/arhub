@@ -3,6 +3,30 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.0.1] - 2026-11-05
+
+修复「拍照扫描后查不到」。三个缺陷叠加导致该现象，逐个修复。
+
+### 修复
+
+- **网关上传只收 PDF**：采集页提交的是 JPG/PNG 扫描件，被 `PDF_MAGIC` 校验以 400 拒收，
+  文件从未进入 Paperless。改为按魔数放行 PDF / JPEG / PNG，并按真实类型设置
+  `Content-Type` 转发给 Paperless（Paperless 原生支持图片 OCR 入库）
+- **post-consume 回调从未发出**：Paperless-ngx v3 调用回调脚本时不传位置参数，
+  文档 ID 经 `DOCUMENT_ID` 环境变量下发；脚本沿用 v2 的 `$1` 写法取到空值后
+  直接 `exit 0`。改为优先读 `DOCUMENT_ID`（保留 `$1` 兜底），并改用容器内确实存在的
+  `curl`（官方镜像不带 `wget`）
+- **文档入库即被隐藏**：`post_document` 返回的是任务 UUID 而非数字文档 ID，
+  网关解析出的 `doc_id` 恒为 `null`，密级记录（fail-closed 前提）无法登记，
+  文档虽已入库却被越权过滤拒于检索之外。改为在 `/internal/index` 回调中直接登记
+  默认密级（内部 = 1），不再依赖上传接口同步拿到 `doc_id`
+
+### 新增
+
+- `webserver` 服务注入 `GATEWAY_URL` 与 `INTERNAL_TOKEN`，打通采集回调链路
+- 索引器新增 `reconcile_missing` 周期兜底：自动为漏登记密级的档案补齐密级与增量索引
+- post-consume 失败诊断改写 stderr，可被 Paperless 消费日志捕获
+
 ## [2.0.0] - 2026-11-04
 
 首个开源版本。相对 v1 原型为系统性重做，不是渐进迭代。
@@ -55,4 +79,5 @@
 
 ---
 
+[2.0.1]: https://github.com/x2it/arhub/releases/tag/v2.0.1
 [2.0.0]: https://github.com/x2it/arhub/releases/tag/v2.0.0
