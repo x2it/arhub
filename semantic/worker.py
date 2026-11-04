@@ -22,6 +22,7 @@ from shared.logging_conf import setup_logging
 log = logging.getLogger("semantic.worker")
 
 POLL_SECONDS = int(os.getenv("WORKER_POLL_SECONDS", "20"))
+RECONCILE_SECONDS = int(os.getenv("WORKER_RECONCILE_SECONDS", "60"))
 BACKOFF_BASE = 5
 MAX_ATTEMPTS = 6
 
@@ -108,6 +109,40 @@ async def reload_matrix() -> None:
         matrix.replace([], np.zeros((0, 512), dtype=np.float32))
 
 
+async def reconcile_missing() -> int:
+    """补齐「已入库但缺密级记录」的档案：登记默认密级 + 入队增量索引。
+
+    网关的越权过滤是 fail-closed（无 doc_security 记录即不可见），因此任何入库
+    路径都必须有密级记录，否则文档会「OCR 完成、索引在库，却检索不到」。
+    事件驱动的 post-consume 回调偶发失败时，本兜底让文档在短时间内变为可检索。
+    """
+    docs = await fetch_all_documents()
+    ids = [d["id"] for d in docs]
+    if not ids:
+        return 0
+    with get_pg() as conn:
+        rows = conn.execute(
+            "SELECT doc_id FROM archive.doc_security WHERE doc_id = ANY(%s)", (ids,)
+        ).fetchall()
+    have = {r[0] for r in rows}
+    missing = [i for i in ids if i not in have]
+    if not missing:
+        return 0
+
+    from shared.settings import get_settings
+
+    tenant = get_settings().tenant_id
+    with get_pg() as conn:
+        for doc_id in missing:
+            conn.execute(
+                "INSERT INTO archive.doc_security(doc_id,classification,tenant_id)"
+                " VALUES (%s,1,%s) ON CONFLICT (doc_id) DO NOTHING", (doc_id, tenant))
+            conn.execute(
+                "INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,'upsert')", (doc_id,))
+    log.info("reconcile_missing 补齐 %s 份档案的密级与索引任务", len(missing))
+    return len(missing)
+
+
 async def main() -> None:
     setup_logging()
     log.info("indexer worker 启动 poll=%ss", POLL_SECONDS)
@@ -120,12 +155,17 @@ async def main() -> None:
         log.error("启动对账失败（轮询重试）: %s", e)
         with get_pg() as conn:
             conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (-1,'upsert')")
+    last_reconcile = time.monotonic()
     while True:
         try:
             tasks = claim_tasks()
             for t in tasks:
                 ok = await process_task(t)
                 finish_task(t["id"], ok, error="process failed" if not ok else "")
+            # 周期兜底：补齐缺密级/缺索引的档案，保证「扫描完即可检索」
+            if time.monotonic() - last_reconcile >= RECONCILE_SECONDS:
+                last_reconcile = time.monotonic()
+                await reconcile_missing()
         except Exception:
             log.exception("worker 循环异常")
         await asyncio.sleep(POLL_SECONDS)

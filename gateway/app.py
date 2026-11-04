@@ -549,6 +549,8 @@ async def download_document(doc_id: int, request: Request, original: bool = Fals
 
 # ================= 上传（校验 + 幂等）=================
 PDF_MAGIC = b"%PDF"
+JPEG_MAGIC = b"\xff\xd8\xff"
+PNG_MAGIC = b"\x89PNG"
 
 
 @app.post("/api/v1/upload")
@@ -572,8 +574,16 @@ async def upload(
     # 流式读取 + 大小/类型校验（修复 file.read() 全量入内存）
     limit = s.max_upload_mb * 1024 * 1024
     head = await file.read(5)
-    if not head.startswith(PDF_MAGIC):
-        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+    # 扫描采集产生的是图片（JPG/PNG），Paperless 原生支持图片 OCR 入库，
+    # 因此网关需放行 PDF / JPEG / PNG 三类，并按魔数判定真实类型。
+    if head.startswith(PDF_MAGIC):
+        upload_ctype = "application/pdf"
+    elif head.startswith(JPEG_MAGIC):
+        upload_ctype = "image/jpeg"
+    elif head.startswith(PNG_MAGIC):
+        upload_ctype = "image/png"
+    else:
+        raise HTTPException(status_code=400, detail="仅支持 PDF / JPG / PNG 文件")
     chunks, total = [head], 5
     while True:
         chunk = await file.read(1024 * 1024)
@@ -625,7 +635,7 @@ async def upload(
     try:
         r = await up.pl.post(
             "/api/documents/post_document/", headers=up.pl_headers(), data=data,
-            files={"document": (file.filename, payload, "application/pdf")})
+            files={"document": (file.filename, payload, upload_ctype)})
     except httpx.HTTPError as e:
         raise HTTPException(status_code=503, detail="档案服务暂不可用，上传未入队") from e
     if r.status_code not in (200, 201):
@@ -663,6 +673,12 @@ async def internal_index(request: Request):
     body = await request.json()
     doc_id, op = int(body["doc_id"]), body.get("op", "upsert")
     with get_pg() as conn:
+        # 入库即登记密级（fail-closed 前提：每份档案必有密级记录，默认内部=1）。
+        # 不依赖索引器异步回填，避免「OCR 完成、索引成功，却检索不到」。
+        conn.execute(
+            "INSERT INTO archive.doc_security(doc_id,classification,owner_dept,tenant_id)"
+            " VALUES (%s,%s,%s,%s) ON CONFLICT (doc_id) DO NOTHING",
+            (doc_id, 1, None, s.tenant_id))
         conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,%s)",
                      (doc_id, op))
     return {"status": "accepted", "doc_id": doc_id, "op": op}

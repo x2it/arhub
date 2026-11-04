@@ -85,6 +85,9 @@ services:
       USERMAP_GID: 1000
       # OCR 完成回调网关 → 自动增量语义索引（阶段5）
       PAPERLESS_POST_CONSUME_SCRIPT: /usr/src/paperless/scripts/post-consume.sh
+      # 回调网关地址与内部令牌（与 gateway 共用同一 INTERNAL_TOKEN）
+      GATEWAY_URL: http://gateway:8700
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
     # 安全边界：不映射宿主端口，仅容器网络可达，绕过网关直连被物理关闭
     networks: [internal]
     healthcheck:
