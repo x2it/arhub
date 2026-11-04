@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -17,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from semantic.indexer import get_model
-from semantic.matrix import get_matrix
+from semantic.matrix import get_matrix, reload_matrix
 from semantic.store import get_store
 from shared.logging_conf import request_id_var, setup_logging
 from shared.settings import get_settings
@@ -26,6 +27,10 @@ log = logging.getLogger("semantic")
 
 s = get_settings()
 
+# 常驻矩阵自动刷新周期（秒）。worker 写完向量会主动通知刷新，此定时器
+# 兜底通知丢失的情况，保证「新档案入库后短时间内即可被语义检索到」。
+MATRIX_REFRESH_SECONDS = int(os.getenv("MATRIX_REFRESH_SECONDS", "30"))
+
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,13 +38,34 @@ async def lifespan(app: FastAPI):
     store = get_store()
     store.init_schema()
     get_model()  # 启动预加载（双检锁），首个请求零等待
-    # 常驻矩阵载入（worker 对账兜底更新）
+    # 常驻矩阵载入
     loaded = store.load_all()
     if loaded:
         metas, mat = loaded
         get_matrix().replace(metas, mat)
         log.info("常驻矩阵就绪: %s 向量", len(metas))
-    yield
+
+    async def _watch_matrix():
+        """定时检查向量库是否变化，变化则重载常驻矩阵（兜底）。"""
+        while True:
+            await asyncio.sleep(MATRIX_REFRESH_SECONDS)
+            try:
+                stats = await asyncio.to_thread(store.stats)
+                cur = (stats.get("chunks"), stats.get("documents"))
+                if cur != getattr(app.state, "matrix_sig", None):
+                    n = await reload_matrix()
+                    app.state.matrix_sig = cur
+                    log.info("常驻矩阵自动刷新: %s 向量", n)
+            except Exception as e:  # noqa: BLE001
+                log.warning("常驻矩阵自动刷新失败: %s", e)
+
+    task = asyncio.create_task(_watch_matrix())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="语义检索服务", version="2.0.0", lifespan=lifespan,
@@ -86,6 +112,18 @@ def JSON_503(payload: dict):
 def stats(request: Request):
     require_internal(request)
     return get_store().stats()
+
+
+@app.post("/internal/reload-matrix")
+async def reload_matrix_endpoint(request: Request):
+    """供 indexer worker 通知：重新载入常驻矩阵。
+
+    worker 写向量库与 API 持有常驻矩阵分处两个进程，worker 写完必须由
+    API 亲自重载，否则新档案「已入库但语义检索不到」。
+    """
+    require_internal(request)
+    n = await reload_matrix()
+    return {"status": "ok", "vectors": n}
 
 
 @app.get("/semantic/search", response_model=list[SearchHit])

@@ -16,6 +16,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from gateway.imaging import decode_bgr
+
 
 def _order_points(pts: np.ndarray) -> np.ndarray:
     """tl, tr, br, bl。"""
@@ -85,14 +87,32 @@ def enhance_bytes(data: bytes, mode: str = "enhance") -> bytes:
 
     mode: enhance（裁边+校正+去阴影+CLAHE）/ gray（同上转灰度）/
           bw（同上 Otsu 二值）/ orig（仅裁边+校正）
+
+    解码走 imaging.decode_bgr：统一处理 HEIC/WebP/TIFF 等格式，
+    并按 EXIF Orientation 校正方向（cv2.imdecode 会忽略它，导致竖拍图
+    在 OCR 前整体旋转 90°）。
+    """
+    return enhance_bytes_meta(data, mode)[0]
+
+
+def enhance_bytes_meta(data: bytes, mode: str = "enhance") -> tuple[bytes, bool]:
+    """增强并附带空白页判定：返回 (JPEG bytes, 是否空白页)。
+
+    空白页判定让批量扫描能自动剔除误触的空白照片——这是消费级扫描 App
+    （CamScanner / Lens）的常见能力，档案入库时必须避免空白页污染检索。
     """
     if mode not in ("enhance", "gray", "bw", "orig"):
         raise ValueError(f"未知增强模式: {mode}")
-    buf = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("无法解码图片，仅支持 JPG/PNG")
+    try:
+        img = decode_bgr(data)
+    except ValueError:
+        raise
+    except Exception as e:  # 解码层的兜底异常统一转成可读错误
+        raise ValueError(f"无法解码图片，仅支持 JPG/PNG/WEBP/TIFF/HEIC：{e}") from e
+    if img is None or img.size == 0:
+        raise ValueError("图片内容为空")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blank = is_blank(gray)
     contour = _find_document_contour(gray)
     if mode == "enhance":
         work = _perspective_crop(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), contour)
@@ -111,4 +131,4 @@ def enhance_bytes(data: bytes, mode: str = "enhance") -> bytes:
     ok, out = cv2.imencode(".jpg", work, [cv2.IMWRITE_JPEG_QUALITY, 88])
     if not ok:
         raise ValueError("JPEG 编码失败")
-    return out.tobytes()
+    return out.tobytes(), blank

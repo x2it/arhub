@@ -126,7 +126,12 @@
 
 ### 扫描增强（对齐扫描全能王 / Microsoft Lens）
 
-拍照上传后服务端 OpenCV 处理，前端**原图/增强后左右对比**再决定是否归档：
+采集页提供**两个独立入口**：**📸 拍照扫描**（移动端直接拉起后置相机）与
+**🖼️ 选择本机图片**（移动端从相册/文件管理器选，桌面端从磁盘选）。
+两者分开是必要的——单一带 `capture="environment"` 的输入框会强制拉起相机，
+用户在移动端**无法选取已拍好的图片**。
+
+选入的图像经服务端 OpenCV 处理，前端**原图/增强后左右对比**再决定是否归档：
 
 | 能力 | 实现 |
 |---|---|
@@ -135,8 +140,17 @@
 | 去阴影/光照不均 | 大核高斯背景估计 + 除法归一化 |
 | 对比度增强 | CLAHE 限制对比度自适应直方图均衡 |
 | 黑白文档模式 | Otsu 自适应二值化 |
-| 空白页检测 | 前景像素占比阈值，避免归档空扫 |
+| 空白页检测 | 前景像素占比阈值，避免归档空扫（前端自动跳过） |
 | 批量采集 | 多图逐张处理，一次性归档 |
+
+**格式兼容**（`gateway/imaging.py`）：按**魔数**而非扩展名判定真实格式，
+支持 PDF / JPEG / PNG / WebP / TIFF / BMP / GIF / **HEIC**（iPhone 默认格式）。
+其中：
+
+- **EXIF 方向校正**：`cv2.imdecode` 会丢弃 EXIF Orientation，竖拍文稿会在 OCR 前
+  整体旋转 90°。统一用 Pillow `exif_transpose` 校正后再入管线
+- **多页 TIFF 展开为多页 PDF**，避免只入库首页
+- 无需变换的格式原样透传，上传幂等键（内容 SHA-256）稳定且不损失画质
 
 **超越点**：扫描全能王止于「把图变清楚」，本系统从这张图往后打通 OCR → 著录 → 密级 → 语义索引 → 检索 → 审计的档案级全链路。
 
@@ -253,9 +267,11 @@ PORT=3000 python3 deploy/publish_proxy.py
 ```
 gateway/     API 网关：app.py(路由) deps.py(鉴权/密级) security.py(JWT/bcrypt)
              audit.py clients.py(连接池/熔断) middleware.py scan_enhance.py
+             imaging.py(格式归一化/EXIF 方向/HEIC)
 semantic/    store.py(向量存取) matrix.py(常驻矩阵) indexer.py(编码) worker.py(流水线)
 shared/      settings.py(配置收编) db.py(连接池) logging_conf.py(JSON 日志)
 migrations/  001_init.sql(业务库) 002_archive_vec.sql(向量库)
+             003_pending_classification.sql(上传密级暂存)
 frontend/    Vue3 + Vite + TS，8 页面（登录/列表/详情/采集/统计/权限/审计/运维）
 docker/      Dockerfile.gateway Dockerfile.semantic（多阶段、非 root、HEALTHCHECK）
 scripts/     up.sh migrate-to-pg.sh backup.sh restore.sh e2e_test.py load_test.py ci.sh

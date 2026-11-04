@@ -192,11 +192,24 @@ class StoreOps:
 
 
 def refresh_matrix_bg() -> None:
-    """索引变更后异步刷新常驻矩阵（失败不影响写库，对账任务兜底）。"""
+    """索引变更后通知 **semantic API 进程** 刷新常驻矩阵。
+
+    worker（indexer 容器）与 API（semantic 容器）是两个独立进程，worker
+    进程内的矩阵刷新对 API 毫无意义——必须由 API 自己重新载入向量库。
+    这里通过内部接口 POST /internal/reload-matrix 触发；失败不影响写库，
+    由周期对账兜底。
+    """
+    from shared.settings import get_settings
 
     async def _run():
         try:
-            await reload_matrix()
+            url = get_settings().semantic_url.rstrip("/") + "/internal/reload-matrix"
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.post(url, headers={"X-Internal-Token": os.getenv("INTERNAL_TOKEN", "")})
+            if r.status_code == 200:
+                log.info("已通知 API 刷新常驻矩阵")
+            else:
+                log.warning("通知 API 刷新矩阵返回 HTTP %s", r.status_code)
         except Exception as e:
             log.error("矩阵刷新失败（对账兜底）: %s", e)
 

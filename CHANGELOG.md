@@ -3,6 +3,52 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.1.0] - 2026-11-05
+
+采集页支持**选择本机图片**，同时修掉一个让新档案「已入库却语义检索不到」的
+架构级一致性缺陷。
+
+### 新增
+
+- **采集页双入口**：拆分为「📸 拍照扫描」与「🖼️ 选择本机图片」两个独立入口。
+  此前只有一个带 `capture="environment"` 的输入框，移动端浏览器会**强制拉起相机**，
+  用户无法从相册或文件管理器中选取已拍好的图片——这是移动端最常见的劝退点。
+  现在拍照入口保留 `capture`，选择入口不带该属性，移动端弹出相册/文件选择器，
+  桌面端弹出磁盘选择器
+- **统一图片归一化层**（`gateway/imaging.py`）：
+  - 按**魔数**而非扩展名判定格式，放行 PDF / JPEG / PNG / WebP / TIFF / BMP / GIF / HEIC
+    （iPhone 默认格式，此前会被 400 拒绝）
+  - **EXIF Orientation 方向校正**：`cv2.imdecode` 会丢弃该标记，导致竖拍文稿在
+    OCR 前整体旋转 90°，识别率骤降。现在统一用 Pillow `exif_transpose` 校正
+  - **多页 TIFF 展开为多页 PDF**：TIFF 透传给 Paperless 只会留下首页
+  - 无需变换的格式（PDF、无旋转标记的 JPEG/PNG）**原样透传**，保证上传幂等键
+    （内容 SHA-256）稳定、不无谓损失画质
+- **空白页检测接入前端**：服务端增强接口返回 `X-Blank-Page` 响应头，采集页据此
+  标记并**自动跳过**误触的空白照片（此前 `is_blank` 是死代码，前端 `blank` 字段
+  从未被赋值）
+- 采集页明确区分「增强失败」与「空白页」两种状态，不再静默丢弃不支持的文件
+
+### 修复
+
+- **新档案「已入库但语义检索不到」**：常驻向量矩阵由 `semantic`（API）进程持有，
+  而向量由 `indexer`（worker）进程写入 PostgreSQL——两者是**两个独立容器**。
+  worker 写完向量后，API 进程的矩阵仍是启动时的快照，新档案只能被全文（关键词）
+  检索命中，语义检索完全查不到，直到容器重启才恢复。修复为：
+  - worker 写完向量后通过内部接口 `POST /internal/reload-matrix` **通知 API 进程
+    亲自重载**常驻矩阵
+  - API 进程新增 30 秒周期**自动刷新**兜底，通知丢失也能自愈
+  - 同时修掉 `semantic/indexer.py` 中调用未导入的 `reload_matrix` 导致的
+    `NameError: name 'reload_matrix' is not defined`（该异常被 try/except 吞掉，
+    表现为矩阵刷新静默失败）
+- `gateway/imaging.py` 修正两处自查发现的缺陷：EXIF 旋转判定必须在旋转**之前**
+  进行（旋转后 orientation 已被清空）；多页帧必须在未旋转的原图上取
+  （`exif_transpose` 走 `copy()` 会把多帧压成单帧，导致多页 TIFF 只剩首页）
+
+### 变更
+
+- 网关依赖新增 `pillow-heif==0.21.0`（HEIC 解码，manylinux 自带 libheif 二进制）
+- 扫描增强错误提示扩展为「JPG/PNG/WEBP/TIFF/HEIC」
+
 ## [2.0.1] - 2026-11-05
 
 修复「拍照扫描后查不到」。三个缺陷叠加导致该现象，逐个修复。

@@ -11,10 +11,10 @@ import logging
 import os
 import time
 
-import numpy as np
+import numpy as np  # noqa: F401  — 保留以兼容历史补丁引用
 
 from semantic.indexer import StoreOps, fetch_all_documents, fetch_document, index_document_sync
-from semantic.matrix import get_matrix
+from semantic.matrix import reload_matrix
 from semantic.store import get_store
 from shared.db import get_pg
 from shared.logging_conf import setup_logging
@@ -60,6 +60,7 @@ async def process_task(task: dict) -> bool:
         if op == "delete":
             ops.delete(doc_id)
             log.info("已删除索引 doc_id=%s", doc_id)
+            await notify_api_reload()
             return True
         if doc_id == -1:  # 全量对账
             return await reconcile()
@@ -72,8 +73,14 @@ async def process_task(task: dict) -> bool:
             doc = await fetch_document(doc_id, client)
         if doc is None:
             ops.delete(doc_id)  # 文档已不存在 → 清理（删除同步）
+            await notify_api_reload()
             return True
-        return await asyncio.to_thread(index_document_sync, ops, doc) is not None
+        ok = await asyncio.to_thread(index_document_sync, ops, doc) is not None
+        if ok:
+            # 单份增量索引完成后立即通知 API 刷新常驻矩阵，
+            # 保证「扫完即可语义检索到」，不必等下一轮周期对账。
+            await notify_api_reload()
+        return ok
     except Exception as e:
         log.exception("任务 %s 失败: %s", task["id"], e)
         return False
@@ -92,21 +99,32 @@ async def reconcile() -> bool:
         ops.delete(doc_id)
         log.info("对账删除陈旧索引 doc_id=%s", doc_id)
     await reload_matrix()
+    await notify_api_reload()
     log.info("对账完成：docs=%s stale=%s 耗时=%.1fs",
              len(docs), len(stale), time.monotonic() - t0)
     return True
 
 
-async def reload_matrix() -> None:
-    store = get_store()
-    loaded = await asyncio.to_thread(store.load_all)
-    matrix = get_matrix()
-    if loaded:
-        metas, mat = loaded
-        matrix.replace(metas, mat)
-        log.info("矩阵已刷新: %s 向量", len(metas))
-    else:
-        matrix.replace([], np.zeros((0, 512), dtype=np.float32))
+async def notify_api_reload() -> None:
+    """通知 semantic API 进程重载常驻矩阵。
+
+    worker 与 API 是两个容器（两个进程），worker 进程里的矩阵刷新对 API
+    无效；必须由持有矩阵并对外检索的 API 进程自己重新载入向量库。
+    """
+    import httpx
+
+    from shared.settings import get_settings
+
+    url = get_settings().semantic_url.rstrip("/") + "/internal/reload-matrix"
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(url, headers={"X-Internal-Token": os.getenv("INTERNAL_TOKEN", "")})
+        if r.status_code == 200:
+            log.info("已通知 API 刷新常驻矩阵")
+        else:
+            log.warning("通知 API 刷新矩阵返回 HTTP %s", r.status_code)
+    except Exception as e:  # noqa: BLE001
+        log.error("通知 API 刷新矩阵失败: %s", e)
 
 
 async def reconcile_missing() -> int:

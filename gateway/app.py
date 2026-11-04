@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from gateway import audit as audit_mod
+from gateway import imaging
 from gateway.clients import CircuitOpen, UpstreamError, Upstreams
 from gateway.deps import (
     UserCtx,
@@ -547,12 +548,7 @@ async def download_document(doc_id: int, request: Request, original: bool = Fals
                  "X-Content-Type-Options": "nosniff"})
 
 
-# ================= 上传（校验 + 幂等）=================
-PDF_MAGIC = b"%PDF"
-JPEG_MAGIC = b"\xff\xd8\xff"
-PNG_MAGIC = b"\x89PNG"
-
-
+# ================= 上传（校验 + 归一化 + 幂等）=================
 @app.post("/api/v1/upload")
 async def upload(
     request: Request,
@@ -571,20 +567,9 @@ async def upload(
     t0 = time.perf_counter()
     if not has_role(u.roles, ROLE_ARCHIVIST, ROLE_ADMIN):
         raise HTTPException(status_code=403, detail="需要档案员或管理员权限")
-    # 流式读取 + 大小/类型校验（修复 file.read() 全量入内存）
+    # 流式读取 + 大小校验（避免 file.read() 全量入内存）
     limit = s.max_upload_mb * 1024 * 1024
-    head = await file.read(5)
-    # 扫描采集产生的是图片（JPG/PNG），Paperless 原生支持图片 OCR 入库，
-    # 因此网关需放行 PDF / JPEG / PNG 三类，并按魔数判定真实类型。
-    if head.startswith(PDF_MAGIC):
-        upload_ctype = "application/pdf"
-    elif head.startswith(JPEG_MAGIC):
-        upload_ctype = "image/jpeg"
-    elif head.startswith(PNG_MAGIC):
-        upload_ctype = "image/png"
-    else:
-        raise HTTPException(status_code=400, detail="仅支持 PDF / JPG / PNG 文件")
-    chunks, total = [head], 5
+    chunks, total = [], 0
     while True:
         chunk = await file.read(1024 * 1024)
         if not chunk:
@@ -594,7 +579,16 @@ async def upload(
             raise HTTPException(status_code=413,
                                 detail=f"文件超过 {s.max_upload_mb}MB 上限")
         chunks.append(chunk)
-    payload = b"".join(chunks)
+    raw = b"".join(chunks)
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+    # 归一化：按魔数判定真实格式（不看扩展名）→ 校正 EXIF 方向 →
+    # 转换为 Paperless 可消费格式（PDF/JPEG/PNG），HEIC/WebP/TIFF 亦可入库。
+    try:
+        payload, upload_ctype, ext = imaging.normalize_upload(raw, file.filename or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    filename = f"{imaging.strip_ext(file.filename or 'document')}.{ext}"
     content_sha = hashlib.sha256(payload).hexdigest()
     key = idem_key or content_sha
     # 暂存「用户选定的密级 → 原始文件 sha256」。Paperless 的 post_document 返回任务
@@ -644,7 +638,7 @@ async def upload(
     try:
         r = await up.pl.post(
             "/api/documents/post_document/", headers=up.pl_headers(), data=data,
-            files={"document": (file.filename, payload, upload_ctype)})
+            files={"document": (filename, payload, upload_ctype)})
     except httpx.HTTPError as e:
         raise HTTPException(status_code=503, detail="档案服务暂不可用，上传未入队") from e
     if r.status_code not in (200, 201):
@@ -995,24 +989,29 @@ async def scan_enhance(request: Request, file: UploadFile = File(...),
     """上传拍照原图 → 服务端 OpenCV 增强 → 返回处理后 JPG。
 
     mode: enhance(去阴影+对比度) / gray(灰度文档) / bw(黑白二值) / orig(仅裁边校正)
+
+    支持 JPG/PNG/WEBP/TIFF/BMP/GIF/HEIC，并自动按 EXIF 方向校正。
     """
     if not has_role(u.roles, ROLE_ARCHIVIST, ROLE_ADMIN, ROLE_VIEWER):
         raise HTTPException(status_code=403, detail="无权使用扫描增强")
-    from gateway.scan_enhance import enhance_bytes  # 延迟导入，避免常驻开销
+    from gateway.scan_enhance import enhance_bytes_meta  # 延迟导入，避免常驻开销
 
     data = await file.read()
     if len(data) > s.max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大")
     try:
-        out = await asyncio.to_thread(enhance_bytes, data, mode)
+        out, blank = await asyncio.to_thread(enhance_bytes_meta, data, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await audit_mod.write_audit(
         request_id=request_id_var.get(), actor_id=u.id, actor_name=u.username,
         actor_roles=u.roles, action="scan_enhance", resource_type="image",
         decision="allow", status_code=200, ip=_client_ip(request),
-        detail={"mode": mode, "bytes_in": len(data)}, tenant_id=s.tenant_id)
-    return StreamingResponse(iter([out]), media_type="image/jpeg")
+        detail={"mode": mode, "bytes_in": len(data), "blank": blank},
+        tenant_id=s.tenant_id)
+    # 空白页标记随响应头返回，前端据此自动剔除误触的空白照片
+    return StreamingResponse(iter([out]), media_type="image/jpeg",
+                             headers={"X-Blank-Page": "1" if blank else "0"})
 
 
 # ================= 静态前端（同源托管，最后挂载）=================

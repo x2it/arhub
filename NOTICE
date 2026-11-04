@@ -25,6 +25,7 @@ Python 依赖（requirements-gateway.txt / requirements-semantic.txt）
   psycopg 3 ...................... LGPL-3.0-or-later
   redis-py / pydantic-settings ... MIT
   python-multipart / prometheus-client / Pillow / OpenCV . 各自官方许可证
+  pillow-heif ...................... MIT（捆绑 libheif，LGPL-2.1-or-later）
   torch .......................... BSD-3-Clause
   sentence-transformers .......... Apache-2.0
 

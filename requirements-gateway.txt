@@ -11,4 +11,5 @@ redis==5.2.1
 prometheus-client==0.21.1
 numpy==2.2.1
 Pillow==11.1.0
+pillow-heif==0.21.0
 opencv-python-headless==4.10.0.84
