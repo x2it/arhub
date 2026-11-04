@@ -21,10 +21,10 @@ bash scripts/up.sh
 构建自研镜像、预下载 `BAAI/bge-small-zh-v1.5`、解除 Paperless 的 s6 `down` 标记、
 补建中文检索索引，最后以 `/ready` 为门禁（最长 10 分钟）。**不要跳过 `/ready` 判定就说部署完成。**
 
-无 git 环境可用分发包（Release v2.0.0 附件）：
+无 git 环境可用分发包（Release v2.1.0 附件）：
 
 ```bash
-BASE="https://github.com/x2it/arhub/releases/download/v2.0.0"
+BASE="https://github.com/x2it/arhub/releases/download/v2.1.0"
 curl -fL --retry 3 -o arhub-deploy.bundle  "$BASE/arhub-deploy.bundle"
 curl -fL --retry 3 -o arhub-deploy.sha256 "$BASE/arhub-deploy.sha256"
 sha256sum -c arhub-deploy.sha256
