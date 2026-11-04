@@ -15,6 +15,8 @@
 [![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-336791.svg)](docker-compose.yml)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](docker-compose.yml)
 
+> **在线演示**：本项目面向内网私有化，不提供公共演示实例；按[快速开始](#快速开始)起栈后访问 `http://127.0.0.1:8700` 即为完整系统，实测截图见下方。
+
 把纸质档案扫描成电子件，自动 OCR 著录，自动建立语义索引，再通过统一 API / Web 工作台按**档号、关键词、自然语言**检索。面向**单机内网私有化**部署：登录鉴权、四级 RBAC、四级密级、全量审计、备份恢复，开箱即用。
 
 **ArcHub** is a self-hosted, intranet-first archive intelligence platform: scan enhancement, OCR ingestion, classification-based access control, full-text and semantic search, and a complete audit trail behind one API gateway. Six containers, one exposed port, no external services.
