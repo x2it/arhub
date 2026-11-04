@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import io
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-sys.path.insert(0, "/workspace/archive-stack")
+# 让测试能以源码树方式导入 gateway 包（与 CI 的仓库根目录运行方式一致）
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway import imaging  # noqa: E402
 
