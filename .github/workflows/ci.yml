@@ -32,7 +32,9 @@ jobs:
       - name: 语法编译
         run: python -m compileall -q gateway semantic shared scripts
       - name: 单元测试
-        run: python -m pytest tests/unit -q
+        run: |
+          export PYTHONPATH=.
+          python -m pytest tests/unit -q
 
   frontend:
     name: 前端类型检查与构建
