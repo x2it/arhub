@@ -22,16 +22,13 @@ from gateway.schemas import SearchHit, SearchResponse  # noqa: E402
 
 
 def make_pdf(pages: int = 3) -> bytes:
-    from reportlab.pdfgen import canvas
+    """用项目自带的 imaging.to_pdf（Pillow）生成多页 PDF。
 
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=(420, 595))
-    for i in range(pages):
-        c.setFont("Helvetica", 18)
-        c.drawString(60, 500, f"ArcHub page {i + 1}")
-        c.showPage()
-    c.save()
-    return buf.getvalue()
+    不引入 reportlab 之类的额外测试依赖——CI 只安装 requirements-gateway.txt
+    与 pytest，本地沙箱预装的库在 CI 里并不存在。
+    """
+    ims = [Image.new("RGB", (420, 595), (250, 248, 240)) for _ in range(pages)]
+    return imaging.to_pdf(ims)
 
 
 def make_jpeg(w: int = 800, h: int = 1100) -> bytes:
