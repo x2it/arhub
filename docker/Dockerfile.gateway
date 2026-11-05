@@ -7,7 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 COPY requirements-gateway.txt .
-RUN pip install --no-cache-dir -r requirements-gateway.txt
+RUN pip install --no-cache-dir -r requirements-gateway.txt \
+ # rapidocr-onnxruntime 声明依赖 opencv-python（GUI 版，需 libxcb），在 slim 镜像里
+ # 会 import 失败；强制回退到 headless 版，避免破坏网关启动。
+ && pip uninstall -y opencv-python 2>/dev/null || true \
+ && pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
 COPY shared/ ./shared/
 COPY gateway/ ./gateway/

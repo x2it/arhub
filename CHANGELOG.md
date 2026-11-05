@@ -3,6 +3,33 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.3.0] - 2026-11-06
+
+针对「名片、手写板能不能扫？现在只能扫 PDF / 只能扫印刷体吗？」的反馈，把
+**手写与弱印刷 OCR** 能力补齐，并正面回答格式与字体边界。
+
+### 澄清（已在界面与文档固化）
+- **不限于 PDF**：采集页接受 `image/*` + `.heic/.heif/.pdf`，网关 `normalize_upload()`
+  支持 JPG / PNG / HEIC / WebP / 多页 TIFF / BMP / GIF / PDF；手机拍照、选本机图、
+  传文件均可。PDF 只是归档输出格式之一。
+- **不限于印刷体**：Tesseract（`chi_sim+eng`）覆盖印刷体，名片 / 文档 / 白底黑字打印件
+  识别率高；**中文手写之前完全扫不出**（Tesseract 无手写模型，用户真实手写照片输出 0 行）。
+
+### 新增：本地 PaddleOCR 手写 OCR 兜底引擎
+- 网关新增 `gateway/ocr_fallback.py`：纯本地 **RapidOCR（PaddleOCR 的 ONNX 实现）**，
+  模型随 pip 包内置（det 4.6M + rec 11M + cls 0.6M），不联网、不出网、不需要密钥。
+- `requirements-gateway.txt` 增加 `rapidocr-onnxruntime==1.4.4`；Dockerfile 强制
+  `opencv-python-headless`，规避 rapidocr 拉入 GUI 版 opencv 导致的 `libxcb` 启动崩溃。
+- **自动兜底**：`/internal/index`（post-consume 回调）在 Tesseract 主 OCR 为空时，
+  异步用 PaddleOCR 对原件重新识别并写回 `content`、重建语义索引——上传手写照片即自动出字。
+- **手动重处理**：`POST /api/v1/documents/{id}/ocr-reprocess`（档案员 / 管理员），
+  强制用 PaddleOCR 重识别；详情页新增「手写OCR重处理」按钮。
+
+### 验证
+- 端到端：用户真实手写照片（JPG，非 PDF）上传 → Tesseract 空 → PaddleOCR 兜底写入 95 字
+  （门牌号、租金等关键字段均命中）；检索 `2500` / `租房` 均命中 doc 29（keyword + semantic）。
+- 单元 3/3、E2E 33/33、浏览器回归 62/62、新增浏览器验证 3/3、6 容器 healthy、CI success。
+
 ## [2.2.1] - 2026-11-06
 
 针对「这么肉眼可见的情况为什么还是抓不到 OCR 文本」的第三次反馈，把**诊断说明**与

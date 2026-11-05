@@ -43,6 +43,7 @@ from gateway.deps import (
 )
 from gateway.errors import install_error_handlers
 from gateway.middleware import RateLimitMiddleware, RequestContextMiddleware, bind_actor
+from gateway import ocr_fallback as ocr_fb
 from gateway.schemas import (
     ContentPatchRequest, ContentPatchResponse, LoginResponse,
     SearchHit, SearchResponse, TaskAccepted,
@@ -918,6 +919,46 @@ async def resolve_uploaded_classification(doc_id: int) -> int:
     return 1
 
 
+# 后台兜底 OCR 任务引用集合：避免 fire-and-forget 的 task 被 GC 提前取消。
+_background_tasks: set = set()
+
+
+async def run_ocr_fallback(doc_id: int) -> None:
+    """后台兜底：主 OCR(Tesseract) 为空时，用 PaddleOCR 识别原件并写回。
+
+    由 /internal/index 在文档入库后异步触发；内部先复核 content 是否已有
+    足量文字（印刷体已识别则跳过），避免覆盖好的印刷体结果。识别成功写回
+    Paperless content 并重新入队语义索引，让手写 / 潦草笔记也能被检索命中。
+    """
+    log = logging.getLogger(__name__)
+    try:
+        doc = await up.pl_get(f"/api/documents/{doc_id}/")
+        content = (doc.get("content") or "").strip()
+        if len(content) >= 5:
+            log.info("doc %s 主OCR已有 %d 字，跳过 PaddleOCR 兜底", doc_id, len(content))
+            return
+        try:
+            r = await up.pl.get(
+                f"/api/documents/{doc_id}/download/",
+                headers=up.pl_headers(), params={"original": "true"})
+            r.raise_for_status()
+            data = r.content
+        except Exception as e:  # noqa: BLE001
+            log.warning("doc %s 下载原件失败，跳过兜底: %s", doc_id, e)
+            return
+        text = await ocr_fb.recognize_document_bytes(data)
+        if not text.strip():
+            log.info("doc %s PaddleOCR 也未识别到文字", doc_id)
+            return
+        await up.pl_patch(f"/api/documents/{doc_id}/", {"content": text})
+        with get_pg() as conn:
+            conn.execute(
+                "INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,'upsert')", (doc_id,))
+        log.info("doc %s PaddleOCR 兜底写入 %d 字", doc_id, len(text))
+    except Exception as e:  # noqa: BLE001
+        log.warning("doc %s OCR 兜底失败: %s", doc_id, e)
+
+
 @app.post("/internal/index")
 async def internal_index(request: Request):
     """Paperless post-consume 回调入口（X-Internal-Token 保护）。"""
@@ -935,7 +976,51 @@ async def internal_index(request: Request):
             (doc_id, level, None, s.tenant_id))
         conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,%s)",
                      (doc_id, op))
+    # 主 OCR(Tesseract) 为空时异步触发 PaddleOCR 手写兜底，不阻塞 post-consume。
+    if op == "upsert":
+        task = asyncio.create_task(run_ocr_fallback(doc_id))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     return {"status": "accepted", "doc_id": doc_id, "op": op, "classification": level}
+
+
+@app.post("/api/v1/documents/{doc_id}/ocr-reprocess", response_model=ContentPatchResponse)
+async def ocr_reprocess(doc_id: int, request: Request, u: UserCtx = Depends(current_user)):
+    """强制用 PaddleOCR 对原件重识别（手写 / 潦草笔记专用），覆盖写回 content 并重索引。
+
+    区别于 /content 补录（人工输入文本），本端点由引擎自动识别；区别于
+    自动兜底（仅主 OCR 为空才触发），本端点总是执行，供用户对手写档案主动重扫。
+    """
+    rid = request_id_var.get()
+    t0 = time.perf_counter()
+    if not has_role(u.roles, ROLE_ARCHIVIST, ROLE_ADMIN):
+        raise HTTPException(status_code=403, detail="需要档案员或管理员权限")
+    try:
+        sec = await require_view_one(u, doc_id)
+    except HTTPException as e:
+        await _deny_audit(request, u, "ocr_reprocess", doc_id, e.status_code, t0)
+        raise
+    try:
+        r = await up.pl.get(
+            f"/api/documents/{doc_id}/download/",
+            headers=up.pl_headers(), params={"original": "true"})
+        r.raise_for_status()
+        data = r.content
+    except httpx.HTTPError as e:
+        await _deny_audit(request, u, "ocr_reprocess", doc_id, 502, t0)
+        raise HTTPException(status_code=502, detail="获取档案原件失败") from e
+    text = await ocr_fb.recognize_document_bytes(data)
+    await up.pl_patch(f"/api/documents/{doc_id}/", {"content": text})
+    with get_pg() as conn:
+        conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,'upsert')", (doc_id,))
+    await audit_mod.write_audit(
+        request_id=rid, actor_id=u.id, actor_name=u.username, actor_roles=u.roles,
+        action="ocr_reprocess", resource_type="document", resource_id=str(doc_id),
+        classification=sec["classification"], decision="allow", status_code=200,
+        latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
+        tenant_id=s.tenant_id)
+    return ContentPatchResponse(doc_id=doc_id, content_length=len(text),
+                                reindexed=True, request_id=rid)
 
 
 @app.post("/api/v1/index/{doc_id}", response_model=TaskAccepted)

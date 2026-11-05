@@ -1,7 +1,7 @@
 {
   "name": "archive-frontend",
   "private": false,
-  "version": "2.2.1",
+  "version": "2.3.0",
   "license": "Apache-2.0",
   "description": "档枢 ArcHub 智能档案中枢 · Web 工作台",
   "type": "module",

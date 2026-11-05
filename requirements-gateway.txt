@@ -17,3 +17,8 @@ opencv-python-headless==4.10.0.84
 # 选 PDFium 绑定而非 PyMuPDF：后者是 AGPL-3.0/商业双授权，与本项目
 # Apache-2.0 的开源分发不兼容；pypdfium2 为 BSD-3-Clause / Apache-2.0。
 pypdfium2==5.3.0
+# 手写 / 弱印刷 OCR 兜底引擎：PaddleOCR 的 ONNX 轻量实现（RapidOCR）。
+# Tesseract/OCRmyPDF 只覆盖印刷体，对中文手写、潦草笔记、浅色压纹完全失效
+# （线上实测：用户真实手写照片 Tesseract 输出 0 行，本引擎命中 8 行）。
+# 模型随包内置（det 4.6M + rec 11M + cls 0.6M），无需运行时联网下载，纯本地推理。
+rapidocr-onnxruntime==1.4.4

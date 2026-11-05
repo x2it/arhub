@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, CLASS_NAMES, downloadFile, getUser, patchContent } from '../api'
+import { api, CLASS_NAMES, downloadFile, getUser, ocrReprocess, patchContent } from '../api'
 import PreviewPane from '../components/PreviewPane.vue'
 
 const route = useRoute()
@@ -75,6 +75,26 @@ async function download(original: boolean) {
     downloading.value = false
   }
 }
+
+// 强制用本地 PaddleOCR 对原件重识别（手写 / 潦草笔记专用）
+const reprocessing = ref(false)
+const reprocessMsg = ref('')
+async function reprocess() {
+  if (reprocessing.value) return
+  reprocessing.value = true
+  reprocessMsg.value = ''
+  try {
+    const r = await ocrReprocess(String(route.params.id))
+    doc.value = await api<any>(`/api/v1/documents/${route.params.id}`)
+    reprocessMsg.value = r.content_length > 0
+      ? `PaddleOCR 已对手写/潦草原件重识别，写入 ${r.content_length} 字，语义索引正在后台重建。`
+      : 'PaddleOCR 仍未识别到文字（原件可能无手写笔画或过于潦草）。如需检索，可在下方「OCR 全文」卡片补录一段描述。'
+  } catch (e: any) {
+    reprocessMsg.value = e.message
+  } finally {
+    reprocessing.value = false
+  }
+}
 </script>
 
 <template>
@@ -98,7 +118,11 @@ async function download(original: boolean) {
           <button class="btn" @click="openStandalone">新窗口预览</button>
           <button class="btn" :disabled="downloading" @click="download(false)">下载归档 PDF</button>
           <button class="btn" :disabled="downloading" @click="download(true)">下载原件</button>
+          <button v-if="canEditContent" class="btn primary" :disabled="reprocessing" @click="reprocess">
+            {{ reprocessing ? '识别中…' : '手写OCR重处理' }}
+          </button>
         </div>
+        <p v-if="reprocessMsg" class="content-msg">{{ reprocessMsg }}</p>
         <p v-if="actionErr" class="err inline-err">{{ actionErr }}</p>
         <p v-if="ocrEmpty" class="ocr-empty">
           ⚠ 该原件未提取到 OCR 文字（正文 0 字）。<strong>档案与拍摄原件都已完整入库，这不是内容丢失。</strong>
@@ -150,6 +174,8 @@ async function download(original: boolean) {
 .meta-row { margin-top: 8px; font-size: 13px; gap: 14px; flex-wrap: wrap; }
 .action-row { margin-top: 12px; gap: 8px; flex-wrap: wrap; }
 .action-row .btn { min-height: 38px; }
+.btn.primary { background: #1a6fc4; color: #fff; border-color: #1a6fc4; }
+.btn.primary:hover { background: #155a9e; }
 .inline-err { margin: 10px 0 0; font-size: 13px; }
 .ocr-empty {
   margin: 12px 0 0; padding: 9px 11px; font-size: 12px; line-height: 1.7;

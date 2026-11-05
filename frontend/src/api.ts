@@ -154,6 +154,14 @@ export async function patchContent(
   })
 }
 
+/** 强制用本地 PaddleOCR 对原件重识别（手写 / 潦草笔记专用），覆盖写回正文并重索引。
+ *  区别于 patchContent（人工输入），本端点由引擎自动识别。 */
+export async function ocrReprocess(
+  docId: string | number,
+): Promise<{ content_length: number; reindexed: boolean }> {
+  return api(`/api/v1/documents/${docId}/ocr-reprocess`, { method: 'POST' })
+}
+
 /** 统一下载：走 authFetch（三通道鉴权 + 401 统一登出），并按响应头还原文件名。
  *  裸 `<a href>` 只能带 cookie，在公共反代下容易 401，且登录态过期时不会
  *  触发统一跳登录，用户只会得到一个空文件或错误页。 */
