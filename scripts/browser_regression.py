@@ -269,6 +269,91 @@ def run_low_quality(browser, user: str, pw: str, img: Path) -> None:
     ctx.close()
 
 
+def run_preview_and_paging(browser, user: str, pw: str, label: str,
+                           viewport: dict, mobile: bool, full: bool = False) -> None:
+    """在线预览（无 iframe / 图片画廊 / 独立预览页）与列表分页（无 50 条上限）。"""
+    import re
+
+    print(f"\n=== {label}：在线预览与列表分页 ===")
+    ctx = browser.new_context(viewport=viewport,
+                              device_scale_factor=2 if mobile else 1,
+                              is_mobile=mobile, has_touch=mobile)
+    page = ctx.new_page()
+    js_errors: list[str] = []
+    page.on("pageerror", lambda e: js_errors.append(str(e)))
+    sign_in(page, user, pw)
+
+    # --- 检索页：自定义每页条数 + 真实总数 + 分页器 ---
+    page.goto(f"{BASE}/#/", wait_until="networkidle")
+    page.wait_for_function(
+        "() => document.querySelectorAll('.hit').length > 0 || !!document.querySelector('.empty-box')",
+        timeout=20000)
+    check(f"{label}：检索页不再使用原生条数下拉", page.locator("select").count() == 0)
+    check(f"{label}：自定义每页条数控件可用", page.locator(".seg button").count() >= 4)
+    bar = page.locator(".result-bar").inner_text() if page.locator(".result-bar").count() else ""
+    check(f"{label}：显示真实档案总数与页码", "份档案" in bar and "第 1/" in bar, bar[:80])
+
+    # 切到最小每页条数，逼出分页器并验证能翻到下一页
+    page.locator(".seg button").first.click()
+    page.wait_for_timeout(1300)
+    pager = page.locator(".pager").count() > 0
+    check(f"{label}：缩小每页条数后出现分页器", pager,
+          "档案总数不足以分页" if not pager else "")
+    if pager and full:
+        shoot(page, "验证-移动端-检索页分页器.png")
+    if pager:
+        first = page.locator(".hit").first.inner_text()
+        page.locator(".pager .pg-btn").last.click()
+        page.wait_for_timeout(1300)
+        bar2 = page.locator(".result-bar").inner_text()
+        check(f"{label}：分页器可翻到第 2 页", "第 2/" in bar2, bar2[:80])
+        check(f"{label}：翻页后列表内容变化",
+              page.locator(".hit").first.inner_text() != first)
+    ok, detail = no_overflow(page)
+    check(f"{label}：检索页分页布局无横向溢出", ok, detail)
+
+    # --- 详情页：图片预览，而不是 iframe 嵌 PDF ---
+    page.goto(f"{BASE}/#/", wait_until="networkidle")
+    page.wait_for_function("() => document.querySelectorAll('.hit').length > 0", timeout=20000)
+    page.locator(".hit").first.locator("a", has_text="查看详情").click()
+    page.wait_for_timeout(800)
+    page.wait_for_function(
+        "() => !!document.querySelector('.pv-img') || !!document.querySelector('.pv-error')",
+        timeout=25000)
+    check(f"{label}：详情页不再用 iframe 嵌 PDF", page.locator("iframe").count() == 0)
+    check(f"{label}：原件渲染为图片预览", page.locator(".pv-img").count() > 0)
+    loaded = page.evaluate(
+        "() => { const i = document.querySelector('.pv-img'); "
+        "return !!(i && i.complete && i.naturalWidth > 100); }")
+    check(f"{label}：预览图真实加载成功（非破图）", loaded)
+    ok, detail = no_overflow(page)
+    check(f"{label}：详情页无横向溢出", ok, detail)
+
+    if full:
+        check("预览工具条含原件/归档切换与下载",
+              page.locator(".pv-seg button").count() == 2
+              and page.locator(".pv-actions .pv-btn").count() >= 2)
+        page.locator(".pv-seg button").nth(1).click()
+        page.wait_for_timeout(1300)
+        check("切换「拍摄原件」后仍可预览", page.locator(".pv-img").count() > 0)
+        page.locator(".pv-img").first.click()
+        check("放大层可打开", page.locator(".pv-overlay").count() > 0)
+        page.locator(".pv-overlay-bar .pv-btn").last.click()
+        check("放大层可关闭", page.locator(".pv-overlay").count() == 0)
+        shoot(page, "验证-移动端-详情页在线预览.png")
+
+        m = re.search(r"#/doc/(\d+)", page.url)
+        did = m.group(1) if m else "1"
+        page.goto(f"{BASE}/#/preview/{did}", wait_until="networkidle")
+        page.wait_for_function("() => !!document.querySelector('.pv-img')", timeout=25000)
+        check("独立预览页无全局顶栏", page.locator(".topbar").count() == 0)
+        check("独立预览页渲染图片预览", page.locator(".pv-img").count() > 0)
+        shoot(page, "验证-移动端-独立预览页.png")
+
+    check(f"{label}：无 JS 运行时错误", not js_errors, "; ".join(js_errors[:2]))
+    ctx.close()
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     user, pw = credentials()
@@ -280,6 +365,10 @@ def main() -> None:
         try:
             run_login_layout(browser)
             run_browse_mode(browser, user, pw)
+            run_preview_and_paging(browser, user, pw, "桌面",
+                                   {"width": 1365, "height": 900}, False)
+            run_preview_and_paging(browser, user, pw, "移动端",
+                                   {"width": 375, "height": 812}, True, full=True)
             run_low_quality(browser, user, pw, low)
             run_view(browser, "桌面", {"width": 1365, "height": 900}, False, user, pw, img)
             run_view(browser, "移动端", {"width": 375, "height": 812}, True, user, pw, img)

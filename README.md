@@ -143,6 +143,15 @@
 | 空白页检测 | 前景像素占比阈值，避免归档空扫（前端自动跳过） |
 | 批量采集 | 多图逐张处理，一次性归档 |
 
+**在线预览**（`gateway/preview.py` + `frontend/src/components/PreviewPane.vue`）：归档 PDF 由
+PDFium 逐页渲染成 JPEG，图片类原件按 EXIF 校正后返回，前端只用 `<img>` 画廊展示，**不依赖
+浏览器内置 PDF 阅读器**（移动端 Edge / 微信 WebView 常禁用它或强制下载）。支持多页翻页、放大、
+归档版 / 拍摄原件切换、新窗口独立预览页；空 OCR 文档仍能看到拍摄原图。下载端点按魔数判定真实
+MIME，所有下载与预览都走统一鉴权请求层。
+
+**浏览与分页**：空检索词即分页列出全部可见档案，`total` 是库内**可见档案总数**（不是本页条数），
+响应带 `total_pages` / `has_more`，前端可翻完全库——不存在「只能显示 50 条」的上限。
+
 **格式兼容**（`gateway/imaging.py`）：按**魔数**而非扩展名判定真实格式，
 支持 PDF / JPEG / PNG / WebP / TIFF / BMP / GIF / **HEIC**（iPhone 默认格式）。
 其中：
@@ -177,7 +186,7 @@ bash scripts/up.sh               # 生成密钥 → 拉镜像 → 预载模型 �
 
 > 源码仓库不含构建产物 `frontend/dist/`：`up.sh` 检测到缺失时会自动执行
 > `pnpm install && pnpm build`（需 Node 22 + pnpm）。想完全免构建，可直接用
-> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.1.2) 里的分发包（已自带 dist）。
+> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.2.0) 里的分发包（已自带 dist）。
 
 | 入口 | 地址 |
 |---|---|
@@ -224,6 +233,13 @@ curl -s -H "$H" -F "file=@a.pdf" -F "title=会议纪要" -F "asn=1006" \
 # 扫描增强
 curl -s -H "$H" -F "file=@photo.jpg" -F "mode=enhance" \
   http://127.0.0.1:8700/api/v1/scan/enhance -o enhanced.jpg
+
+# 在线预览：第 1 页渲染为 JPEG（src=archive|original，响应头带 X-Page-Count）
+curl -s -H "$H" "http://127.0.0.1:8700/api/v1/documents/6/preview?page=1&src=archive" -o page1.jpg
+
+# 浏览全部档案：空检索词 = SQL 真分页，total 为真实总数
+curl -s -H "$H" "http://127.0.0.1:8700/api/v1/search?mode=hybrid&page=1&page_size=20" \
+  | jq '.total, .total_pages, .has_more, .browsing'
 ```
 
 完整端点见 `/api/docs`。当外层反向代理占用 `Authorization` 头时，网关也接受
@@ -234,9 +250,9 @@ curl -s -H "$H" -F "file=@photo.jpg" -F "mode=enhance" \
 ## 验证
 
 ```bash
-python3 -m pytest tests/unit -q        # 单元测试（RRF/切片/矩阵阈值/扫描增强/密级/JWT/密码）
-python3 scripts/e2e_test.py            # 端到端断言（鉴权/RBAC/密级/四模式检索/上传校验/审计）
-python3 scripts/browser_regression.py  # 浏览器回归（登录页几何/浏览模式/语义阈值/低对比度提示/双视口）
+python3 -m pytest tests/unit -q        # 单元测试（RRF/矩阵阈值/扫描增强/预览渲染/分页契约/密级/JWT/密码）
+python3 scripts/e2e_test.py            # 端到端断言（鉴权/RBAC/密级/四模式检索/预览/分页/下载 MIME/审计）
+python3 scripts/browser_regression.py  # 浏览器回归（登录页几何/浏览模式/语义阈值/在线预览/分页/双视口）
 python3 scripts/load_test.py 8 200     # 检索接口压测（QPS + P50/P95/P99）
 bash scripts/preflight-opensource.sh   # 开源合规自检（无密钥/私有链接/本机路径）
 bash scripts/ci.sh                     # 全流程串跑
@@ -268,15 +284,16 @@ PORT=3000 python3 deploy/publish_proxy.py
 ```
 gateway/     API 网关：app.py(路由) deps.py(鉴权/密级) security.py(JWT/bcrypt)
              audit.py clients.py(连接池/熔断) middleware.py scan_enhance.py
-             imaging.py(格式归一化/EXIF 方向/HEIC)
+             imaging.py(格式归一化/EXIF 方向/HEIC) preview.py(PDFium 逐页渲染/JPEG 预览)
 semantic/    store.py(向量存取) matrix.py(常驻矩阵) indexer.py(编码) worker.py(流水线)
 shared/      settings.py(配置收编) db.py(连接池) logging_conf.py(JSON 日志)
 migrations/  001_init.sql(业务库) 002_archive_vec.sql(向量库)
              003_pending_classification.sql(上传密级暂存)
-frontend/    Vue3 + Vite + TS，8 页面（登录/列表/详情/采集/统计/权限/审计/运维）
+frontend/    Vue3 + Vite + TS，9 页面（登录/列表/详情/独立预览/采集/统计/权限/审计/运维）
+             + components/PreviewPane.vue(通用图片预览画廊：翻页/放大/原件切换)
 docker/      Dockerfile.gateway Dockerfile.semantic（多阶段、非 root、HEALTHCHECK）
 scripts/     up.sh migrate-to-pg.sh backup.sh restore.sh e2e_test.py browser_regression.py load_test.py ci.sh
-tests/       unit/test_core.py unit/test_imaging.py unit/test_search_quality.py
+tests/       unit/test_core.py unit/test_imaging.py unit/test_search_quality.py unit/test_preview.py
 docs/        实测截图与品牌图
 .github/     CI 工作流、Issue / PR 模板
 LICENSE NOTICE README.md AGENTS.md DEPLOY.md CONTRIBUTING.md

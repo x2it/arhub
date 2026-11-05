@@ -38,7 +38,7 @@ function doLogout() {
 </script>
 
 <template>
-  <div v-if="route.path !== '/login'">
+  <div v-if="route.path !== '/login' && !route.path.startsWith('/preview/')">
     <header class="topbar">
       <div class="layout bar-inner">
         <span class="brand">

@@ -3,6 +3,55 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-11-05
+
+针对「文件不可以在线预览」「总的内容只能显示 50 条」的系统性修复。排查确认这不是两个
+孤立开关，而是**预览链路依赖浏览器插件 + 下载 MIME 标错 + 列表无分页 + 总数语义错误**
+四处叠加，本次一次性把两条链路整条重做。
+
+### 新增：在线预览（不依赖浏览器 PDF 插件）
+
+- 详情页原先用 `<iframe src=*.pdf>` 依赖浏览器内置 PDF 阅读器；移动端 Edge / 微信 WebView
+  会禁用阅读器或强制下载，用户只看到「已在 Microsoft Edge 中禁用 PDF 阅读器」。新增
+  `gateway/preview.py`：用 **PDFium（pypdfium2，BSD-3-Clause / Apache-2.0）** 把归档 PDF
+  逐页渲染成 JPEG，图片类原件复用 `imaging.iter_frames`（EXIF 校正 / 透明底压白 / 多帧展开）。
+- 新增 `GET /api/v1/documents/{id}/preview?page=N&src=archive|original`，返回 JPEG 与
+  `X-Page-Count` / `X-Page-Index` / `X-Original-Mime` 响应头，带 10 分钟 LRU 缓存与
+  fail-closed 密级裁决、审计留痕。
+- 前端抽出通用 `PreviewPane`：翻页、放大、归档版/拍摄原件切换、下载；图片走统一鉴权请求层
+  （三通道 JWT + 401 统一登出），不再用裸 `<img src>` / `<iframe>`。新增 `/preview/:id`
+  独立预览页（新窗口打开、无全局顶栏）。
+- **空 OCR 文档仍可查看拍摄原件**：翻拍屏幕、空白页一眼可辨，不再只显示「（暂无 OCR 文本）」。
+
+### 修复：下载与鉴权
+
+- `original=true` 时 Paperless 返回的是 JPEG，后端却硬编码 `application/pdf`，这是预览失败的
+  另一半原因。下载端点改为按魔数判定真实 MIME 并带上规范文件名。
+- 所有下载改走 `downloadFile()`（基于统一鉴权请求层），不再用裸 `<a href>` 只靠 cookie
+  单通道；登录态过期时同样会正确跳登录。
+
+### 修复：列表无分页 / 50 条天花板
+
+- 检索页原有原生 `<select>` 只有 5/10/20/50，`browse_documents` 又把 `top_k` 直接当
+  `page_size`，无分页、无真实总数，超过上限的档案永远看不到。改为 **SQL 真分页**
+  （`archive.documents_document` 与密级表同库 JOIN），返回库内可见档案总数、
+  `total_pages`、`has_more`，前端用自定义每页条数控件 + 分页器翻完全库。
+- `total` 语义修正：浏览模式是**可见档案总数**，不再等于本页条数；结果编号按页偏移。
+- `max_top_k` 100 → 500，`/api/v1/documents` 单页上限 100 → 200。明确区分
+  `top_k`（相关性召回上限）与 `page_size`（浏览分页每页条数）。
+- 顺带修掉 `imaging.iter_frames` 多页 TIFF 只取首页的隐藏 bug（`exif_transpose` 的
+  `copy()` 会压掉多帧，必须在未旋转原图上逐帧 seek）。
+
+### 依赖与合规
+
+- 预览渲染选 pypdfium2 而非 PyMuPDF：后者是 AGPL-3.0 / 商业双授权，与本项目 Apache-2.0
+  的开源分发不兼容；PDFium 绑定为 BSD-3-Clause / Apache-2.0。NOTICE 已同步登记。
+
+### 验证
+
+单元测试 39/39 · 端到端断言 33/33 · 浏览器回归 62/62（桌面 + 375px，覆盖预览翻页、
+放大、独立预览页、分页翻页、无 iframe、无横向溢出）· 公网真实浏览器实测通过。
+
 ## [2.1.2] - 2026-11-05
 
 针对「已采集的文档内容都是空的」与移动端登录区排版的系统性修复。排查发现这不是单一故障，

@@ -26,8 +26,12 @@ Python 依赖（requirements-gateway.txt / requirements-semantic.txt）
   redis-py / pydantic-settings ... MIT
   python-multipart / prometheus-client / Pillow / OpenCV . 各自官方许可证
   pillow-heif ...................... MIT（捆绑 libheif，LGPL-2.1-or-later）
+  pypdfium2 / PDFium ............. BSD-3-Clause / Apache-2.0（PDF → 图片预览渲染）
   torch .......................... BSD-3-Clause
   sentence-transformers .......... Apache-2.0
+
+预览渲染刻意不使用 PyMuPDF：其为 AGPL-3.0 / Artifex 商业双授权，与本仓库
+Apache-2.0 的开源分发不兼容；PDFium 绑定授权宽松且同样无需系统 poppler。
 
 前端依赖（frontend/package.json）
   Vue 3 / Vue Router / Vite ...... MIT

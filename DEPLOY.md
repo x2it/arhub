@@ -39,7 +39,7 @@ bash deploy/make_bundle.sh
 下载与校验：
 
 ```bash
-BASE="https://github.com/x2it/arhub/releases/download/v2.1.2"
+BASE="https://github.com/x2it/arhub/releases/download/v2.2.0"
 curl -fL --retry 3 -o arhub-deploy.bundle  "$BASE/arhub-deploy.bundle"
 curl -fL --retry 3 -o arhub-deploy.sha256 "$BASE/arhub-deploy.sha256"
 sha256sum -c arhub-deploy.sha256

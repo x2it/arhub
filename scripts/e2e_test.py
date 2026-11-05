@@ -138,6 +138,55 @@ def main():
         check("下载 200 且 nosniff",
               r.status_code == 200 and r.headers.get("x-content-type-options") == "nosniff")
 
+    # ---- 2b) 在线预览、下载 MIME 与浏览分页 ----
+    if docs:
+        doc_id = docs[0]["id"]
+        r = c.get(f"{GATEWAY}/api/v1/documents/{doc_id}/preview",
+                  headers=admin_h, params={"page": 1, "src": "archive"})
+        check("在线预览返回 JPEG 图片（不依赖浏览器 PDF 插件）",
+              r.status_code == 200
+              and r.headers.get("content-type", "").startswith("image/jpeg")
+              and r.content[:3] == b"\xff\xd8\xff")
+        check("预览响应带页数与原件类型头",
+              r.headers.get("x-page-count", "").isdigit()
+              and int(r.headers.get("x-page-count", "0")) >= 1
+              and bool(r.headers.get("x-original-mime")))
+        r2 = c.get(f"{GATEWAY}/api/v1/documents/{doc_id}/preview",
+                   headers=admin_h, params={"page": 9999})
+        check("预览页码越界被拒 422", r2.status_code == 422)
+        r3 = c.get(f"{GATEWAY}/api/v1/documents/{doc_id}/preview", params={"page": 1})
+        check("预览未带令牌 401", r3.status_code == 401)
+
+        # 原件是 JPEG 却曾硬编码 application/pdf → 这里锁住「MIME 与魔数一致」
+        ro = c.get(f"{GATEWAY}/api/v1/documents/{doc_id}/download",
+                   headers=admin_h, params={"original": "true"})
+        ct, magic = ro.headers.get("content-type", ""), ro.content[:5]
+        consistent = ((magic.startswith(b"%PDF-") and "pdf" in ct)
+                      or (magic[:3] == b"\xff\xd8\xff" and "jpeg" in ct)
+                      or (magic.startswith(b"\x89PNG") and "png" in ct))
+        check("原件下载 MIME 与真实内容一致", consistent, f"{ct} / {magic!r}")
+        ra = c.get(f"{GATEWAY}/api/v1/documents/{doc_id}/download", headers=admin_h)
+        check("归档版下载为 PDF 且带文件名",
+              ra.headers.get("content-type", "").startswith("application/pdf")
+              and "filename=" in ra.headers.get("content-disposition", ""))
+
+    # 浏览模式：total 是真实档案总数（非 50 条上限），翻页可拿到不同档案
+    b1 = c.get(f"{GATEWAY}/api/v1/search", headers=admin_h,
+               params={"mode": "hybrid", "page": 1, "page_size": 3}).json()
+    b2 = c.get(f"{GATEWAY}/api/v1/search", headers=admin_h,
+               params={"mode": "hybrid", "page": 2, "page_size": 3}).json()
+    ids1 = [x["doc_id"] for x in b1.get("results", [])]
+    ids2 = [x["doc_id"] for x in b2.get("results", [])]
+    check("浏览模式返回真实档案总数（非本页条数）",
+          b1.get("browsing") is True and b1.get("total", 0) >= len(ids1))
+    check("浏览模式分页元数据完整",
+          b1.get("total_pages", 0) == max(1, (b1.get("total", 0) + 2) // 3)
+          and isinstance(b1.get("has_more"), bool))
+    if b1.get("total", 0) > 3:
+        check("浏览模式翻页拿到不重复档案",
+              bool(ids1) and bool(ids2) and not set(ids1) & set(ids2),
+              f"p1={ids1} p2={ids2}")
+
     # ---- 3) RBAC ----
     r = c.post(f"{GATEWAY}/api/v1/admin/users", headers=admin_h,
                data={"username": "e2e_viewer", "password": "E2e#viewer1",

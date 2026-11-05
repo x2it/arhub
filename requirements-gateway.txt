@@ -13,3 +13,7 @@ numpy==2.2.1
 Pillow==11.1.0
 pillow-heif==0.21.0
 opencv-python-headless==4.10.0.84
+# PDF → 图片预览渲染：纯 wheel，无需系统 poppler / 浏览器 PDF 插件。
+# 选 PDFium 绑定而非 PyMuPDF：后者是 AGPL-3.0/商业双授权，与本项目
+# Apache-2.0 的开源分发不兼容；pypdfium2 为 BSD-3-Clause / Apache-2.0。
+pypdfium2==5.3.0

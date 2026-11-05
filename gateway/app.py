@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 from gateway import audit as audit_mod
 from gateway import imaging
+from gateway import preview as preview_mod
 from gateway.clients import CircuitOpen, UpstreamError, Upstreams
 from gateway.deps import (
     UserCtx,
@@ -391,29 +393,54 @@ async def search_metadata(asn, created_after, created_before, correspondent,
              "source": "metadata"} for d in data.get("results", [])]
 
 
-async def browse_documents(top_k: int) -> list[dict]:
-    """无检索词时按入库时间倒序列出全部可见档案（检索页首次加载 / 清空搜索框）。
+async def browse_documents(page: int, page_size: int,
+                           u: UserCtx) -> tuple[list[dict], int]:
+    """空检索词时按入库时间倒序**分页**列出全部可见档案。
 
-    此前空 q 会让关键词路直接返回 []，页面显示「暂无结果，请调整检索条件」，
-    用户会误以为档案库是空的、或自己采集的文档「内容都是空的」——实际档案都在，
-    只是没有检索词。浏览模式明确区分「未输入检索词」与「检索无命中」，并顺带
-    回传每份档案的 OCR 正文状态，让「入库成功但未识别到文字」一眼可见。
+    两个历史缺陷一并修掉：
+    1. 此前空 q 直接返回 []，页面显示「暂无结果」，让人误以为档案库是空的；
+       浏览模式明确区分「未输入检索词」与「检索无命中」，并回传 OCR 正文状态。
+    2. 此前把 top_k 直接当 page_size 用，没有分页也没有真实总数——库里超过
+       50/100 份后的档案永远看不到，用户会以为「总的内容只能显示 50 条」。
+       这里改为直接对同一 PostgreSQL 库做 SQL 分页（Paperless 的
+       ``archive.documents_document`` 与网关密级表 ``archive.doc_security``
+       同库），一次取得**可见档案总数**与本页数据，密级过滤与分页同时完成。
+
+    裁决规则与 deps.can_view 保持一致（当前为 clearance >= classification）；
+    若将来扩展部门可见性，需同步这里的 WHERE 条件。
     """
-    data = await up.pl_get("/api/documents/", {
-        "page_size": min(top_k, s.max_top_k), "ordering": "-added"})
-    out = []
-    for d in data.get("results", []):
-        content = (d.get("content") or "").strip()
+    def _query() -> tuple[int, list]:
+        where = (
+            "FROM archive.documents_document d "
+            "JOIN archive.doc_security s ON s.doc_id = d.id "
+            "WHERE d.deleted_at IS NULL AND s.classification <= %s"
+        )
+        with get_pg() as conn:
+            total = conn.execute("SELECT count(*) " + where,
+                                 (u.clearance,)).fetchone()[0]
+            rows = conn.execute(
+                "SELECT d.id, d.title, d.archive_serial_number, d.created, "
+                "d.content, s.classification " + where +
+                " ORDER BY d.added DESC NULLS LAST, d.id DESC LIMIT %s OFFSET %s",
+                (u.clearance, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return int(total), rows
+
+    total, rows = await asyncio.to_thread(_query)
+    out: list[dict] = []
+    for did, title, asn, created, content, classification in rows:
+        text = (content or "").strip()
         out.append({
-            "doc_id": d["id"], "title": d.get("title"),
-            "asn": d.get("archive_serial_number"),
-            "created": (d.get("created") or "")[:10] or None,
-            "snippet": content[:160] or None,
+            "doc_id": did, "title": title, "asn": asn,
+            # PG 可能返回 date/datetime，统一转字符串再截取
+            "created": str(created or "")[:10] or None,
+            "snippet": text[:160] or None,
             "source": "browse",
-            "ocr_empty": not bool(content),
-            "content_length": len(content),
+            "classification": classification,
+            "ocr_empty": not bool(text),
+            "content_length": len(text),
         })
-    return out
+    return out, total
 
 
 @app.get("/api/v1/search", response_model=SearchResponse)
@@ -428,6 +455,9 @@ async def search(
     document_type: Optional[str] = None,
     tag: Optional[str] = None,
     top_k: int = Query(s.default_top_k, ge=1, le=s.max_top_k),
+    # 浏览模式专用分页参数；检索模式下 top_k 仍是相关性召回上限（两者语义不同）
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     u: UserCtx = Depends(current_user),
 ):
     t0 = time.perf_counter()
@@ -435,14 +465,15 @@ async def search(
     degraded = False
     q_norm = (q or "").strip()
     browsing = False
+    visible_total = 0
     try:
         if mode == "metadata":
             raw = await search_metadata(asn, created_after, created_before,
                                         correspondent, document_type, tag, top_k)
         elif not q_norm:
-            # 空检索词 ≠ 零命中：切换为浏览模式，列出全部档案
+            # 空检索词 ≠ 零命中：切换为浏览模式，分页列出全部可见档案
             browsing = True
-            raw = await browse_documents(top_k)
+            raw, visible_total = await browse_documents(page, page_size, u)
         elif mode == "keyword":
             raw = await search_keyword(q_norm, top_k)
         elif mode == "semantic":
@@ -458,7 +489,9 @@ async def search(
                 degraded = True  # 语义路故障/熔断 → 仅关键词，明确标记
                 log.warning("hybrid 降级：语义路不可用 (%r)", sem_r)
             raw = rrf_fuse(kw, sem, top_k=top_k)
-        filtered = post_filter_hits(u, raw)  # 统一越权过滤（覆盖语义路）
+        # 浏览模式已在 SQL 里完成密级裁决（fail-closed），无需二次查询；
+        # 检索路（尤其语义路不经 Paperless）仍必须在这里统一越权过滤。
+        filtered = raw if browsing else post_filter_hits(u, raw)
         # hybrid 下 matched_by 才是真实来源，source 标为 hybrid；单路则标该路名
         results = [SearchHit(**{**{k: v for k, v in h.items() if k in SearchHit.model_fields},
                                "source": ("browse" if browsing else
@@ -472,8 +505,16 @@ async def search(
             ip=_client_ip(request),
             detail={"q": q, "asn": asn, "hits": len(results), "browsing": browsing},
             tenant_id=s.tenant_id)
-        return SearchResponse(request_id=rid, mode=mode, total=len(results),
-                              degraded=degraded, browsing=browsing, results=results)
+        # 浏览模式 total 是「库内可见档案总数」，非本页条数；检索模式是命中数
+        total = visible_total if browsing else len(results)
+        total_pages = ((total + page_size - 1) // page_size) if browsing else 0
+        return SearchResponse(
+            request_id=rid, mode=mode, total=total,
+            degraded=degraded, browsing=browsing,
+            page=page if browsing else 1, page_size=page_size,
+            total_pages=total_pages,
+            has_more=bool(browsing and page * page_size < total),
+            results=results)
     except (UpstreamError, CircuitOpen) as e:
         status = getattr(e, "status", 503)
         await audit_mod.write_audit(
@@ -496,7 +537,7 @@ async def _deny_audit(request: Request, u: UserCtx, action: str, doc_id: int,
 
 
 @app.get("/api/v1/documents")
-async def list_documents(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+async def list_documents(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
                          q: str = "", u: UserCtx = Depends(current_user)):
     """档案列表：回源 Paperless 分页，再按密级过滤（无记录即剔除，fail-closed）。"""
     try:
@@ -575,10 +616,107 @@ async def download_document(doc_id: int, request: Request, original: bool = Fals
         decision="allow", status_code=200,
         latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
         tenant_id=s.tenant_id)
+    # 真实 MIME 必须按魔数判定：original=true 时 Paperless 返回的往往是 JPEG，
+    # 硬编码 application/pdf 会让浏览器「预览」直接失败（这是线上真实故障）。
+    payload = r.content
+    tag = "original" if original else "archive"
+    filename = f"arhub-{doc_id}-{tag}.{preview_mod.ext_of(payload)}"
     return StreamingResponse(
-        iter([r.content]), media_type="application/pdf",
-        headers={"Content-Disposition": "inline" if inline else "attachment",
+        iter([payload]), media_type=preview_mod.mime_of(payload),
+        headers={"Content-Disposition":
+                 f"{'inline' if inline else 'attachment'}; filename=\"{filename}\"",
                  "X-Content-Type-Options": "nosniff"})
+
+
+# ================= 在线预览（不依赖浏览器 PDF 插件）=================
+# 渲染结果缓存：key=(doc_id, src, page) → (写入时间, jpeg, 页数, 原件MIME)。
+# 3.5MB 的归档 PDF 每次重新回源 + 渲染代价不低，翻页/回看走缓存。
+_PREVIEW_CACHE: dict[tuple[int, str, int], tuple[float, bytes, int, str]] = {}
+_PREVIEW_LOCK = threading.Lock()
+_PREVIEW_TTL = 600.0
+_PREVIEW_MAX = 128
+
+
+def _preview_cache_get(key: tuple[int, str, int]):
+    with _PREVIEW_LOCK:
+        item = _PREVIEW_CACHE.get(key)
+        if item and time.monotonic() - item[0] < _PREVIEW_TTL:
+            return item[1], item[2], item[3]
+    return None
+
+
+def _preview_cache_put(key: tuple[int, str, int], jpeg: bytes,
+                       count: int, mime: str) -> None:
+    with _PREVIEW_LOCK:
+        if len(_PREVIEW_CACHE) >= _PREVIEW_MAX:
+            now = time.monotonic()
+            for k, v in list(_PREVIEW_CACHE.items()):
+                if now - v[0] >= _PREVIEW_TTL:
+                    _PREVIEW_CACHE.pop(k, None)
+            if len(_PREVIEW_CACHE) >= _PREVIEW_MAX:
+                for k in list(_PREVIEW_CACHE)[: _PREVIEW_MAX // 2]:
+                    _PREVIEW_CACHE.pop(k, None)
+        _PREVIEW_CACHE[key] = (time.monotonic(), jpeg, count, mime)
+
+
+@app.get("/api/v1/documents/{doc_id}/preview")
+async def preview_document(doc_id: int, request: Request,
+                           page: int = Query(1, ge=1),
+                           src: str = Query("archive", pattern="^(archive|original)$"),
+                           u: UserCtx = Depends(current_user)):
+    """返回第 ``page`` 页（1-based）的 JPEG 预览图。
+
+    浏览器内置 PDF 阅读器在移动端 / Edge 常被禁用或强制下载，因此这里不返回
+    PDF、前端也不用 ``<iframe>``，而是统一渲染成图片。鉴权与其他端点一致
+    （先裁决再回源），前端用统一请求层拿 blob，三通道 JWT 全部生效。
+    """
+    t0 = time.perf_counter()
+    try:
+        sec = await require_view_one(u, doc_id)
+    except HTTPException as e:
+        await _deny_audit(request, u, "preview", doc_id, e.status_code, t0)
+        raise
+
+    key = (doc_id, src, page)
+    cached = _preview_cache_get(key)
+    if cached:
+        jpeg, count, orig_mime = cached
+    else:
+        try:
+            r = await up.pl.get(
+                f"/api/documents/{doc_id}/download/",
+                headers=up.pl_headers(),
+                params={"original": "true" if src == "original" else "false"})
+            r.raise_for_status()
+            payload = r.content
+            jpeg, count = await asyncio.to_thread(
+                preview_mod.render_source, payload, page - 1)
+            orig_mime = preview_mod.mime_of(payload)
+            _preview_cache_put(key, jpeg, count, orig_mime)
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502,
+                                detail="读取档案原件失败，无法预览") from e
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            log.exception("预览渲染失败 doc=%s page=%s", doc_id, page)
+            raise HTTPException(status_code=422, detail=f"无法生成预览：{e}") from e
+
+    await audit_mod.write_audit(
+        request_id=request_id_var.get(), actor_id=u.id, actor_name=u.username,
+        actor_roles=u.roles, action="preview", resource_type="document",
+        resource_id=str(doc_id), classification=sec["classification"],
+        decision="allow", status_code=200,
+        latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
+        tenant_id=s.tenant_id)
+    return Response(
+        content=jpeg, media_type="image/jpeg",
+        headers={
+            "X-Page-Index": str(page), "X-Page-Count": str(count),
+            "X-Preview-Source": src, "X-Original-Mime": orig_mime,
+            "Cache-Control": "private, max-age=600",
+            "X-Content-Type-Options": "nosniff",
+        })
 
 
 # ================= 上传（校验 + 归一化 + 幂等）=================

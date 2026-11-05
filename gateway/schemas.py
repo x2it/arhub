@@ -37,9 +37,16 @@ class SearchHit(BaseModel):
 class SearchResponse(BaseModel):
     request_id: str
     mode: str
+    # total：浏览模式 = 库内可见档案总数（非本页条数）；检索模式 = 本次命中数
     total: int
     degraded: bool = False
     browsing: bool = False
+    # 分页信息仅浏览模式有意义：空检索词时按入库时间倒序翻完全库，
+    # 不再受 top_k / 50 条这类人为上限约束。
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 0
+    has_more: bool = False
     results: list[SearchHit]
 
 

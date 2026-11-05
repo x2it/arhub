@@ -8,6 +8,7 @@ import LoginView from './views/Login.vue'
 import CaptureView from './views/Capture.vue'
 import DocumentListView from './views/DocumentList.vue'
 import DocumentDetailView from './views/DocumentDetail.vue'
+import PreviewView from './views/PreviewView.vue'
 import AccessControlView from './views/AccessControl.vue'
 import AuditLogView from './views/AuditLog.vue'
 import DashboardView from './views/Dashboard.vue'
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/', component: DocumentListView },
     { path: '/capture', component: CaptureView },
     { path: '/doc/:id', component: DocumentDetailView },
+    { path: '/preview/:id', component: PreviewView },
     { path: '/acl', component: AccessControlView },
     { path: '/audit', component: AuditLogView },
     { path: '/dashboard', component: DashboardView },

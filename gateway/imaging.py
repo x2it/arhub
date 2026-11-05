@@ -193,6 +193,29 @@ def to_pdf(images: list[Image.Image]) -> bytes:
     return buf.getvalue()
 
 
+def iter_frames(data: bytes) -> list[Image.Image]:
+    """解码并展开所有帧（EXIF 方向校正 + 透明底压白）。
+
+    供预览层复用：单页 JPG/PNG/HEIC 返回 1 帧，多页 TIFF / 动图 GIF
+    返回全部帧。与上传归一化共用同一套解码逻辑，确保预览方向与归档一致。
+
+    注意：不能用 ``decode_pil(data)`` 再取帧——``ImageOps.exif_transpose``
+    走 ``copy()`` 会把多帧压成单帧（多页 TIFF 只剩首页）。必须在未旋转的
+    原图上逐帧 seek，再对**每一帧**单独做方向校正。
+    """
+    img = open_image(data)
+    n = int(getattr(img, "n_frames", 1) or 1)
+    out: list[Image.Image] = []
+    for i in range(max(1, n)):
+        if n > 1:
+            try:
+                img.seek(i)
+            except EOFError:
+                break
+        out.append(_flatten(_transpose(img)))
+    return out or [_flatten(_transpose(img))]
+
+
 def strip_ext(filename: str) -> str:
     """去掉扩展名，保留主名（用于生成规范文件名）。"""
     name = (filename or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]

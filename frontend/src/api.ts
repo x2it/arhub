@@ -139,3 +139,23 @@ export function consumeRedirect(): string | null {
 }
 
 export const CLASS_NAMES = ['公开', '内部', '秘密', '机密']
+
+/** 统一下载：走 authFetch（三通道鉴权 + 401 统一登出），并按响应头还原文件名。
+ *  裸 `<a href>` 只能带 cookie，在公共反代下容易 401，且登录态过期时不会
+ *  触发统一跳登录，用户只会得到一个空文件或错误页。 */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const res = await authFetch(path)
+  if (!res.ok) throw new Error(await readError(res))
+  const blob = await res.blob()
+  const cd = res.headers.get('content-disposition') || ''
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd)
+  const name = m ? decodeURIComponent(m[1]) : fallbackName
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
+}
