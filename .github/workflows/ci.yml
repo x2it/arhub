@@ -22,7 +22,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-gateway.txt
       - name: 安装依赖
-        run: pip install -r requirements-gateway.txt pytest
+        run: |
+          pip install -r requirements-gateway.txt pytest
+          # rapidocr-onnxruntime 会拉入 GUI 版 opencv-python（依赖 libxcb），
+          # 在 CI/容器无 X11 的环境下 import cv2 会失败；强制回退 headless 版，
+          # 与 docker/Dockerfile.gateway 保持一致。
+          pip uninstall -y opencv-python 2>/dev/null || true
+          pip install --force-reinstall opencv-python-headless==4.10.0.84
       - name: 语法编译
         run: python -m compileall -q gateway semantic shared scripts
       - name: 单元测试
