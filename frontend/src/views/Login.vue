@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { login } from '../api'
+import { consumeRedirect, login } from '../api'
 import BrandMark from '../components/BrandMark.vue'
 
 const router = useRouter()
@@ -19,7 +19,8 @@ async function submit() {
   busy.value = true
   try {
     await login(username.value, password.value)
-    router.push('/')
+    // 登录过期被踢回登录页时，成功后回到原来正在操作的页面
+    router.push(consumeRedirect() || '/')
   } catch (e: any) {
     err.value = e.message || '登录失败'
   } finally {
@@ -55,7 +56,16 @@ async function submit() {
     </div>
 
     <div class="form-panel">
-      <form class="card login-card" @submit.prevent="submit">
+      <div class="login-stack">
+        <!-- 移动端精简品牌头：品牌区在窄屏隐藏后，页面顶部不再是一大片空白 -->
+        <div class="mobile-brand">
+          <BrandMark :size="34" />
+          <div class="mobile-brand-text">
+            <b>档枢 <span>ArcHub</span></b>
+            <small>智能档案中枢 · 让每一份档案都可被找到</small>
+          </div>
+        </div>
+        <form class="card login-card" @submit.prevent="submit">
         <div class="form-head">
           <BrandMark :size="28" />
           <h2>安全登录</h2>
@@ -77,7 +87,8 @@ async function submit() {
           登 录
         </button>
         <div class="form-foot">档枢 ArcHub · 所有访问均被记录与审计</div>
-      </form>
+        </form>
+      </div>
     </div>
   </div>
 </template>
@@ -85,8 +96,11 @@ async function submit() {
 <style scoped>
 .login-wrap {
   min-height: 100vh;
+  min-height: 100dvh; /* 移动端浏览器地址栏收起/展开时按可视高度算，避免大片空白 */
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  /* minmax(0,…) 是关键：默认 1fr 的最小尺寸是 auto，会被右侧固定宽卡片撑成
+     424px，在 375px 视口下右边直接被裁掉（即用户截图里的登录区问题）。 */
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
 }
 /* ---------- 左：品牌叙事 ---------- */
 .brand-panel {
@@ -142,8 +156,22 @@ async function submit() {
 .form-panel {
   display: flex; align-items: center; justify-content: center;
   background: var(--bg); padding: 32px;
+  min-width: 0;
 }
-.login-card { width: 360px; max-width: 100%; padding: 34px 32px; margin: 0; }
+.login-stack {
+  width: 100%;
+  max-width: 360px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.login-card { width: 100%; max-width: 100%; padding: 34px 32px; margin: 0; }
+.mobile-brand { display: none; align-items: center; gap: 10px; padding: 0 2px; }
+.mobile-brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mobile-brand-text b { font-size: 17px; color: var(--ink); }
+.mobile-brand-text b span { font-weight: 500; opacity: .75; font-size: 14px; }
+.mobile-brand-text small { font-size: 11px; color: var(--muted); }
 .form-head { display: flex; align-items: center; gap: 10px; }
 .form-head h2 { font-size: 20px; margin: 0; }
 .form-tip { font-size: 12px; margin: 10px 0 26px; }
@@ -155,8 +183,20 @@ async function submit() {
 }
 .err { color: var(--danger); font-size: 13px; margin: 10px 0 0; }
 @media (max-width: 820px) {
-  .login-wrap { grid-template-columns: 1fr; }
+  .login-wrap { grid-template-columns: minmax(0, 1fr); min-height: 100dvh; }
   .brand-panel { display: none; }
-  .form-panel { min-height: 100vh; }
+  .form-panel {
+    min-height: 100vh;
+    min-height: 100dvh;
+    align-items: flex-start; /* 顶部对齐，不再把卡片垂直推到屏幕中段留一大片空白 */
+    padding: calc(28px + var(--safe-top)) 16px calc(28px + var(--safe-bottom));
+  }
+  .login-stack { max-width: 420px; }
+  .login-card { padding: 26px 20px; }
+  .mobile-brand { display: flex; }
+}
+@media (max-width: 360px) {
+  .form-panel { padding-left: 12px; padding-right: 12px; }
+  .login-card { padding: 22px 16px; }
 }
 </style>

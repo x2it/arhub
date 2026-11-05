@@ -177,7 +177,7 @@ bash scripts/up.sh               # 生成密钥 → 拉镜像 → 预载模型 �
 
 > 源码仓库不含构建产物 `frontend/dist/`：`up.sh` 检测到缺失时会自动执行
 > `pnpm install && pnpm build`（需 Node 22 + pnpm）。想完全免构建，可直接用
-> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.1.0) 里的分发包（已自带 dist）。
+> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.1.2) 里的分发包（已自带 dist）。
 
 | 入口 | 地址 |
 |---|---|
@@ -234,8 +234,9 @@ curl -s -H "$H" -F "file=@photo.jpg" -F "mode=enhance" \
 ## 验证
 
 ```bash
-python3 -m pytest tests/unit -q        # 单元测试（RRF/切片/矩阵/扫描增强/密级/JWT/密码）
+python3 -m pytest tests/unit -q        # 单元测试（RRF/切片/矩阵阈值/扫描增强/密级/JWT/密码）
 python3 scripts/e2e_test.py            # 端到端断言（鉴权/RBAC/密级/四模式检索/上传校验/审计）
+python3 scripts/browser_regression.py  # 浏览器回归（登录页几何/浏览模式/语义阈值/低对比度提示/双视口）
 python3 scripts/load_test.py 8 200     # 检索接口压测（QPS + P50/P95/P99）
 bash scripts/preflight-opensource.sh   # 开源合规自检（无密钥/私有链接/本机路径）
 bash scripts/ci.sh                     # 全流程串跑
@@ -274,8 +275,8 @@ migrations/  001_init.sql(业务库) 002_archive_vec.sql(向量库)
              003_pending_classification.sql(上传密级暂存)
 frontend/    Vue3 + Vite + TS，8 页面（登录/列表/详情/采集/统计/权限/审计/运维）
 docker/      Dockerfile.gateway Dockerfile.semantic（多阶段、非 root、HEALTHCHECK）
-scripts/     up.sh migrate-to-pg.sh backup.sh restore.sh e2e_test.py load_test.py ci.sh
-tests/       unit/test_core.py
+scripts/     up.sh migrate-to-pg.sh backup.sh restore.sh e2e_test.py browser_regression.py load_test.py ci.sh
+tests/       unit/test_core.py unit/test_imaging.py unit/test_search_quality.py
 docs/        实测截图与品牌图
 .github/     CI 工作流、Issue / PR 模板
 LICENSE NOTICE README.md AGENTS.md DEPLOY.md CONTRIBUTING.md

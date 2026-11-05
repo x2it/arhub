@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import App from './App.vue'
+import { isTokenValid } from './api'
 import './assets/main.css'
 
 import LoginView from './views/Login.vue'
@@ -26,11 +27,16 @@ const router = createRouter({
   ],
 })
 
-// 全局路由守卫：未登录跳登录页（后端仍是唯一裁决者）
+// 全局路由守卫：不仅判断 token 是否存在，还要校验 exp 是否仍然有效。
+// 只判断字符串存在会让「已过期令牌」放行，页面照常渲染但所有接口 401，
+// 用户会卡在一个看似正常、实则完全不可用的界面里。后端仍是唯一裁决者。
 router.beforeEach((to) => {
-  const token = localStorage.getItem('archive_jwt')
-  if (to.path !== '/login' && !token) return '/login'
-  if (to.path === '/login' && token) return '/'
+  const valid = isTokenValid()
+  if (to.path !== '/login' && !valid) {
+    if (to.fullPath !== '/') sessionStorage.setItem('arc_redirect', '#' + to.fullPath)
+    return '/login'
+  }
+  if (to.path === '/login' && valid) return '/'
 })
 
 createApp(App).use(router).mount('#app')

@@ -124,7 +124,8 @@ async def notify_api_reload() -> None:
         else:
             log.warning("通知 API 刷新矩阵返回 HTTP %s", r.status_code)
     except Exception as e:  # noqa: BLE001
-        log.error("通知 API 刷新矩阵失败: %s", e)
+        # 启动竞态下 API 可能尚未就绪，30 秒周期刷新会自愈；不按故障上报
+        log.warning("通知 API 刷新矩阵失败（周期刷新兜底）: %s", e)
 
 
 async def reconcile_missing() -> int:
@@ -179,14 +180,17 @@ async def main() -> None:
     log.info("indexer worker 启动 poll=%ss", POLL_SECONDS)
     store = get_store()
     store.init_schema()
-    # 启动即对账一次（替代原型"手动全量重建"）
+    # 启动即对账一次（替代原型"手动全量重建"）。
+    # 依赖服务（Paperless / 向量模型 / semantic API）可能尚未就绪，此时只是启动竞态，
+    # 不是故障：降级为 warning，并让首轮循环立即执行 reconcile_missing() 兜底补齐。
+    # 旧实现会插入 doc_id=-1 占位任务，它在依赖就绪前被立即消费、重试至 dead，
+    # 既污染错误日志，又留下永远不会成功的僵尸任务。
     try:
         await reconcile()
+        last_reconcile = time.monotonic()
     except Exception as e:
-        log.error("启动对账失败（轮询重试）: %s", e)
-        with get_pg() as conn:
-            conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (-1,'upsert')")
-    last_reconcile = time.monotonic()
+        log.warning("启动对账未完成（依赖尚未就绪，将由周期对账兜底）: %s", e)
+        last_reconcile = time.monotonic() - RECONCILE_SECONDS
     while True:
         try:
             tasks = claim_tasks()

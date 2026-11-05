@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getUser, hasRole, logout } from './api'
+import { getUser, logout } from './api'
 import BrandMark from './components/BrandMark.vue'
 
 const route = useRoute()
@@ -13,14 +13,20 @@ const user = computed(() => {
   return getUser()
 })
 
+// hasRole() 直接读 localStorage，不是响应式依赖；若不在 computed 里显式
+// 依赖 user（其依赖 route.path），菜单会在登录页首次渲染时被缓存成「仅基础 3 项」，
+// 管理员登录后仍看不到权限/审计/运维，必须刷新页面才出现。
 const nav = computed(() => {
+  const u = user.value
+  const allow = (...roles: string[]) =>
+    !!u && (u.roles || []).some((r: string) => roles.includes(r))
   const items = [
     { path: '/', label: '档案检索', show: true },
     { path: '/capture', label: '采集扫描', show: true },
     { path: '/dashboard', label: '统计', show: true },
-    { path: '/acl', label: '权限', show: hasRole('admin') },
-    { path: '/audit', label: '审计', show: hasRole('admin', 'auditor') },
-    { path: '/ops', label: '运维', show: hasRole('admin') },
+    { path: '/acl', label: '权限', show: allow('admin') },
+    { path: '/audit', label: '审计', show: allow('admin', 'auditor') },
+    { path: '/ops', label: '运维', show: allow('admin') },
   ]
   return items.filter((i) => i.show)
 })
@@ -66,6 +72,7 @@ function doLogout() {
   border-bottom: 2px solid var(--gold);
   margin-bottom: 18px;
   box-shadow: 0 2px 12px rgba(14, 42, 71, 0.12);
+  padding-top: var(--safe-top);
 }
 .bar-inner {
   display: flex;
@@ -89,5 +96,36 @@ function doLogout() {
 .user-box .muted { color: #B9CDDF; }
 .user-box .btn { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.22); color: #fff; }
 .user-box .btn:hover { background: rgba(255, 255, 255, 0.2); }
-@media (max-width: 860px) { .brand-tag { display: none; } }
+@media (max-width: 860px) {
+  .brand-tag { display: none; }
+  .bar-inner { gap: 8px; padding-top: 8px; padding-bottom: 8px; }
+  .nav-link { padding: 6px 9px; }
+}
+/* 手机顶栏：品牌 + 退出一行，导航独占一行并可横向滑动，避免挤压换行 */
+@media (max-width: 640px) {
+  .topbar { margin-bottom: 14px; }
+  .bar-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    row-gap: 6px;
+    column-gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .brand { grid-column: 1; grid-row: 1; min-width: 0; }
+  .brand-name { font-size: 15px; }
+  .brand-name b { font-size: 12px; }
+  .user-box { grid-column: 2; grid-row: 1; }
+  .user-box .muted { display: none; }
+  /* 全部菜单换行平铺可见，不用「横向滑动才能发现」的隐藏式导航 */
+  nav.row {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-bottom: 2px;
+  }
+  .nav-link { flex: none; white-space: nowrap; padding: 5px 9px; font-size: 12px; }
+}
 </style>

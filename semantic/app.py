@@ -137,7 +137,9 @@ def search(request: Request, q: str, top_k: int = Query(5, ge=1, le=50)):
     model = get_model()
     qv = model.encode([s.query_prefix + q], normalize_embeddings=True,
                       show_progress_bar=False)[0]
-    hits = matrix.search(np.asarray(qv, dtype=np.float32), top_k)
+    hits = matrix.search(np.asarray(qv, dtype=np.float32), top_k,
+                         min_score=s.semantic_min_score,
+                         rel_margin=s.semantic_rel_margin)
     return [SearchHit(doc_id=h["doc_id"], doc_title=h.get("doc_title"),
                       asn=h.get("asn"), created=h.get("created"),
                       chunk_index=h.get("chunk_index"),  # 修复原型恒 None

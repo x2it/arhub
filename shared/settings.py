@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     default_top_k: int = 10
     max_top_k: int = 100
+    # 语义召回的最低余弦相似度 + 相对最佳命中的允许落差。
+    # 无阈值时库里文档少会「搜什么都返回同一批档案」，实测相关查询 top1 ≥ 0.45、
+    # 无关查询 top1 ≤ 0.38，0.40 可干净切开；rel_margin 保留与最佳结果相近的弱相关项。
+    semantic_min_score: float = 0.40
+    semantic_rel_margin: float = 0.18
 
     # ---- 语义索引 ----
     embed_model: str = "BAAI/bge-small-zh-v1.5"

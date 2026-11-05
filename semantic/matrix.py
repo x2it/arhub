@@ -35,17 +35,38 @@ class ResidentMatrix:
     def size(self) -> int:
         return len(self._metas)
 
-    def search(self, qvec: np.ndarray, top_k: int) -> list[dict]:
+    def search(self, qvec: np.ndarray, top_k: int,
+               min_score: float = 0.40, rel_margin: float = 0.18) -> list[dict]:
+        """近邻检索：相似度双阈值过滤 + 文档级去重。
+
+        两个此前缺失的约束：
+        1. **阈值**：原型无差别返回 top_k 个近邻。向量库只有 8 篇文档时，
+           连「今天天气怎么样」「asdfghjkl」都会把全库返回，污染 hybrid 融合结果。
+           这里用「绝对下限」与「相对最佳命中的落差」共同裁定，弱相关一律丢弃。
+        2. **去重**：同一档案被切成多个分块，原型会把同一 doc_id 重复列出，
+           挤占 top_k 名额并让结果看起来像一堆重复内容。按 doc_id 保留最高分块。
+        """
         with self._lock:
             mat, metas = self._mat, self._metas
         if mat is None or not metas:
             return []
         sims = mat @ qvec  # 向量均已归一化，点积即余弦相似度
+        best = float(sims.max()) if sims.size else 0.0
+        cutoff = max(min_score, best - rel_margin)
         k = min(top_k, len(metas))
         # argpartition O(N) 取候选，再局部排序（替代原型全量 argsort O(N log N)）
         idx = np.argpartition(-sims, k - 1)[:k]
         idx = idx[np.argsort(-sims[idx])]
-        return [{**metas[i], "score": round(float(sims[i]), 4)} for i in idx]
+        by_doc: dict[int, dict] = {}
+        for i in idx:
+            score = round(float(sims[i]), 4)
+            if score < cutoff:
+                continue
+            rec = {**metas[i], "score": score}
+            doc_id = rec.get("doc_id")
+            if doc_id not in by_doc or score > by_doc[doc_id]["score"]:
+                by_doc[doc_id] = rec
+        return sorted(by_doc.values(), key=lambda h: h["score"], reverse=True)[:top_k]
 
 
 @lru_cache

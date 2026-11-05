@@ -29,6 +29,9 @@ class SearchHit(BaseModel):
     snippet: Optional[str] = None
     highlights: Optional[str] = None
     classification: Optional[int] = None
+    # 浏览模式（空检索词）专用：标注 OCR 是否为空，避免「有档案却查不到内容」的困惑
+    ocr_empty: Optional[bool] = None
+    content_length: Optional[int] = None
 
 
 class SearchResponse(BaseModel):
@@ -36,6 +39,7 @@ class SearchResponse(BaseModel):
     mode: str
     total: int
     degraded: bool = False
+    browsing: bool = False
     results: list[SearchHit]
 
 

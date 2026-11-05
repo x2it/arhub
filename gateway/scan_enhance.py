@@ -13,8 +13,11 @@
 """
 from __future__ import annotations
 
+import io
+
 import cv2
 import numpy as np
+from PIL import Image
 
 from gateway.imaging import decode_bgr
 
@@ -82,6 +85,21 @@ def is_blank(gray: np.ndarray, thresh: float = 0.995) -> bool:
     return ink < (1 - thresh)
 
 
+def quality_flag(gray: np.ndarray) -> str:
+    """识别「翻拍屏幕 / 文字过淡」这类 OCR 高风险图。
+
+    翻拍屏照片上文字与背景都是浅灰，还夹着摩尔纹，中间灰（140~205）像素
+    占比极高（实测 0.19）；正常扫描件中间灰几乎为 0（0.0005），空白页为 0。
+    用中间灰占比而非均值来判定，才不会把正常白纸文档误判成低质量。
+
+    这类图若走「去阴影（背景除法）+ 强 CLAHE」，浅色笔画会被一起归一化掉，
+    实测 OCR 直接返回 ``No text was found``，最终入库一份空文档。
+    """
+    mean = float(gray.mean())
+    mid = float(np.count_nonzero((gray >= 140) & (gray <= 205))) / gray.size
+    return "low-contrast" if mean > 190 and mid > 0.05 else "ok"
+
+
 def enhance_bytes(data: bytes, mode: str = "enhance") -> bytes:
     """主入口：bytes → 增强后 JPEG bytes。
 
@@ -92,14 +110,22 @@ def enhance_bytes(data: bytes, mode: str = "enhance") -> bytes:
     并按 EXIF Orientation 校正方向（cv2.imdecode 会忽略它，导致竖拍图
     在 OCR 前整体旋转 90°）。
     """
-    return enhance_bytes_meta(data, mode)[0]
+    return enhance_bytes_full(data, mode)[0]
 
 
 def enhance_bytes_meta(data: bytes, mode: str = "enhance") -> tuple[bytes, bool]:
-    """增强并附带空白页判定：返回 (JPEG bytes, 是否空白页)。
+    """兼容入口：返回 (JPEG bytes, 是否空白页)。"""
+    out, blank, _ = enhance_bytes_full(data, mode)
+    return out, blank
 
-    空白页判定让批量扫描能自动剔除误触的空白照片——这是消费级扫描 App
-    （CamScanner / Lens）的常见能力，档案入库时必须避免空白页污染检索。
+
+def enhance_bytes_full(data: bytes, mode: str = "enhance") -> tuple[bytes, bool, str]:
+    """增强并返回 (JPEG bytes, 是否空白页, 图像质量标记)。
+
+    - 空白页判定让批量扫描自动剔除误触的空白照片。
+    - 质量标记 ``low-contrast`` 表示疑似翻拍屏幕 / 文字过淡，此时**跳过**
+      去阴影（背景除法）并改用温和 CLAHE，避免把浅色笔画一起洗掉；
+      前端据此提示用户「OCR 可能识别不出，建议重拍或改用原图」。
     """
     if mode not in ("enhance", "gray", "bw", "orig"):
         raise ValueError(f"未知增强模式: {mode}")
@@ -113,22 +139,33 @@ def enhance_bytes_meta(data: bytes, mode: str = "enhance") -> tuple[bytes, bool]
         raise ValueError("图片内容为空")
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blank = is_blank(gray)
+    quality = quality_flag(gray)
     contour = _find_document_contour(gray)
+
+    def _prep(g: np.ndarray) -> np.ndarray:
+        """低对比度图只做温和局部增强；正常图走去阴影。"""
+        if quality == "low-contrast":
+            return cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8)).apply(g)
+        return _remove_shadow(g)
+
     if mode == "enhance":
         work = _perspective_crop(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), contour)
-        work = _remove_shadow(work)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        work = clahe.apply(work)
+        work = _prep(work)
+        if quality == "ok":
+            work = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(work)
     elif mode == "gray":
-        work = _perspective_crop(gray, contour)
-        work = _remove_shadow(work)
+        work = _prep(_perspective_crop(gray, contour))
     elif mode == "bw":
-        work = _perspective_crop(gray, contour)
-        work = _remove_shadow(work)
+        work = _prep(_perspective_crop(gray, contour))
         work = cv2.threshold(work, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     else:  # orig：仅几何校正
         work = _perspective_crop(img, contour)
-    ok, out = cv2.imencode(".jpg", work, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    if not ok:
-        raise ValueError("JPEG 编码失败")
-    return out.tobytes(), blank
+
+    # 用 Pillow 编码以写入 300 DPI：cv2.imencode 产出的 JPEG 不带密度信息，
+    # ocrmypdf 会报 "Error while getting DPI from image: 'dpi'" 并按默认分辨率
+    # 判断版面，小字文档容易识别失败。
+    pil = (Image.fromarray(cv2.cvtColor(work, cv2.COLOR_BGR2RGB))
+           if work.ndim == 3 else Image.fromarray(work))
+    buf = io.BytesIO()
+    pil.save(buf, format="JPEG", quality=88, dpi=(300, 300))
+    return buf.getvalue(), blank, quality

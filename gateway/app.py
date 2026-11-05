@@ -391,6 +391,31 @@ async def search_metadata(asn, created_after, created_before, correspondent,
              "source": "metadata"} for d in data.get("results", [])]
 
 
+async def browse_documents(top_k: int) -> list[dict]:
+    """无检索词时按入库时间倒序列出全部可见档案（检索页首次加载 / 清空搜索框）。
+
+    此前空 q 会让关键词路直接返回 []，页面显示「暂无结果，请调整检索条件」，
+    用户会误以为档案库是空的、或自己采集的文档「内容都是空的」——实际档案都在，
+    只是没有检索词。浏览模式明确区分「未输入检索词」与「检索无命中」，并顺带
+    回传每份档案的 OCR 正文状态，让「入库成功但未识别到文字」一眼可见。
+    """
+    data = await up.pl_get("/api/documents/", {
+        "page_size": min(top_k, s.max_top_k), "ordering": "-added"})
+    out = []
+    for d in data.get("results", []):
+        content = (d.get("content") or "").strip()
+        out.append({
+            "doc_id": d["id"], "title": d.get("title"),
+            "asn": d.get("archive_serial_number"),
+            "created": (d.get("created") or "")[:10] or None,
+            "snippet": content[:160] or None,
+            "source": "browse",
+            "ocr_empty": not bool(content),
+            "content_length": len(content),
+        })
+    return out
+
+
 @app.get("/api/v1/search", response_model=SearchResponse)
 async def search(
     request: Request,
@@ -408,18 +433,24 @@ async def search(
     t0 = time.perf_counter()
     rid = request_id_var.get()
     degraded = False
+    q_norm = (q or "").strip()
+    browsing = False
     try:
         if mode == "metadata":
             raw = await search_metadata(asn, created_after, created_before,
                                         correspondent, document_type, tag, top_k)
+        elif not q_norm:
+            # 空检索词 ≠ 零命中：切换为浏览模式，列出全部档案
+            browsing = True
+            raw = await browse_documents(top_k)
         elif mode == "keyword":
-            raw = await search_keyword(q or "", top_k)
+            raw = await search_keyword(q_norm, top_k)
         elif mode == "semantic":
-            raw = await search_semantic(q or "", top_k)
+            raw = await search_semantic(q_norm, top_k)
         else:
             kw_r, sem_r = await asyncio.gather(
-                search_keyword(q or "", top_k),
-                search_semantic(q or "", top_k),
+                search_keyword(q_norm, top_k),
+                search_semantic(q_norm, top_k),
                 return_exceptions=True)
             kw = kw_r if not isinstance(kw_r, BaseException) else []
             sem = sem_r if not isinstance(sem_r, BaseException) else []
@@ -430,7 +461,8 @@ async def search(
         filtered = post_filter_hits(u, raw)  # 统一越权过滤（覆盖语义路）
         # hybrid 下 matched_by 才是真实来源，source 标为 hybrid；单路则标该路名
         results = [SearchHit(**{**{k: v for k, v in h.items() if k in SearchHit.model_fields},
-                               "source": ("hybrid" if mode == "hybrid" else mode)})
+                               "source": ("browse" if browsing else
+                                          ("hybrid" if mode == "hybrid" else mode))})
                    for h in filtered]
         SEARCH_LAT.labels(mode).observe(time.perf_counter() - t0)
         await audit_mod.write_audit(
@@ -438,9 +470,10 @@ async def search(
             action="search", resource_type="search", resource_id=mode, decision="allow",
             status_code=200, latency_ms=int((time.perf_counter() - t0) * 1000),
             ip=_client_ip(request),
-            detail={"q": q, "asn": asn, "hits": len(results)}, tenant_id=s.tenant_id)
+            detail={"q": q, "asn": asn, "hits": len(results), "browsing": browsing},
+            tenant_id=s.tenant_id)
         return SearchResponse(request_id=rid, mode=mode, total=len(results),
-                              degraded=degraded, results=results)
+                              degraded=degraded, browsing=browsing, results=results)
     except (UpstreamError, CircuitOpen) as e:
         status = getattr(e, "status", 503)
         await audit_mod.write_audit(
@@ -606,10 +639,15 @@ async def upload(
         if row and row[0]:
             return {"status": "ok", "doc_id": row[0], "duplicate": True,
                     "message": "重复上传，已返回既有档案", "request_id": rid}
+    # 题名可读化：手机相册导出的文件名常是纯数字时间戳（如 1793886509….jpg），
+    # 直接当题名会让档案列表出现一串无法辨认的数字；OCR 为空时更难定位是哪份档案。
+    # 纯数字/下划线主名 → 改用「扫描件 + 成文日期」；日期由前端按本地时间提交，
+    # 避免容器内 UTC 时钟与用户所在地相差 8 小时。
+    raw_title = (title or "").strip()
+    if not raw_title or re.fullmatch(r"[\d_\-]{6,}", raw_title):
+        raw_title = f"扫描件 {created}" if created else "扫描件"
     # 字典解析：失败即拒绝（字段绝不静默丢失）
-    data: dict[str, Any] = {}
-    if title:
-        data["title"] = title
+    data: dict[str, Any] = {"title": raw_title}
     if created:
         data["created"] = created
     if asn is not None:
@@ -662,7 +700,7 @@ async def upload(
         action="upload", resource_type="document", resource_id=str(doc_id or ""),
         classification=classification, decision="allow", status_code=200,
         latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
-        detail={"title": title, "asn": asn, "bytes": total}, tenant_id=s.tenant_id)
+        detail={"title": raw_title, "asn": asn, "bytes": total}, tenant_id=s.tenant_id)
     return {"status": "queued", "doc_id": doc_id, "duplicate": False,
             "message": "已入队 OCR；完成后自动建立语义索引", "request_id": rid}
 
@@ -994,24 +1032,27 @@ async def scan_enhance(request: Request, file: UploadFile = File(...),
     """
     if not has_role(u.roles, ROLE_ARCHIVIST, ROLE_ADMIN, ROLE_VIEWER):
         raise HTTPException(status_code=403, detail="无权使用扫描增强")
-    from gateway.scan_enhance import enhance_bytes_meta  # 延迟导入，避免常驻开销
+    from gateway.scan_enhance import enhance_bytes_full  # 延迟导入，避免常驻开销
 
     data = await file.read()
     if len(data) > s.max_upload_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail="图片过大")
     try:
-        out, blank = await asyncio.to_thread(enhance_bytes_meta, data, mode)
+        out, blank, quality = await asyncio.to_thread(enhance_bytes_full, data, mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await audit_mod.write_audit(
         request_id=request_id_var.get(), actor_id=u.id, actor_name=u.username,
         actor_roles=u.roles, action="scan_enhance", resource_type="image",
         decision="allow", status_code=200, ip=_client_ip(request),
-        detail={"mode": mode, "bytes_in": len(data), "blank": blank},
+        detail={"mode": mode, "bytes_in": len(data), "blank": blank,
+                "quality": quality},
         tenant_id=s.tenant_id)
-    # 空白页标记随响应头返回，前端据此自动剔除误触的空白照片
+    # 空白页与图像质量标记随响应头返回：前端据此跳过空白页，并对
+    # 「翻拍屏幕 / 文字过淡」这种 OCR 高风险图给出重拍提示，避免静默空文档。
     return StreamingResponse(iter([out]), media_type="image/jpeg",
-                             headers={"X-Blank-Page": "1" if blank else "0"})
+                             headers={"X-Blank-Page": "1" if blank else "0",
+                                      "X-Image-Quality": quality})
 
 
 # ================= 静态前端（同源托管，最后挂载）=================

@@ -61,7 +61,9 @@ async def current_user(request: Request) -> UserCtx:
         raise HTTPException(status_code=401, detail="未登录或令牌缺失")
     claims = decode_token(token)
     if not claims:
-        raise HTTPException(status_code=401, detail="令牌无效或已过期")
+        # 平台反代会占用 Authorization 头做自身访问控制，此时浏览器若未登录，
+        # 该头会被当作令牌验签失败。文案需明确指向「重新登录」这一可自愈动作。
+        raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
     u = UserCtx(
         id=int(claims.get("sub", 0)),
         username=str(claims.get("username", "")),

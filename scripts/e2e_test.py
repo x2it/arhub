@@ -162,6 +162,12 @@ def main():
     # ---- 4) 密级 fail-closed ----
     if docs:
         doc_id = docs[0]["id"]
+        # 先记录原始密级与归属部门。旧实现验证结束硬编码复位为 0，会把被抽检
+        # 档案的密级永久改成「公开」，属于测试脚本自身的数据副作用，必须消除。
+        sec0 = c.get(f"{GATEWAY}/api/v1/admin/docs/{doc_id}/security",
+                     headers=admin_h).json()
+        orig_cls = int(sec0.get("classification", 1))
+        orig_dept = sec0.get("owner_dept")
         r = c.put(f"{GATEWAY}/api/v1/admin/docs/{doc_id}/security", headers=admin_h,
                   data={"classification": "3"})
         check("设置密级=机密", r.status_code == 200)
@@ -169,8 +175,11 @@ def main():
         check("viewer 越权读机密件被拒（fail-closed）", r.status_code == 403)
         r = c.post(f"{GATEWAY}/api/v1/index", headers=viewer_h)
         check("viewer 触发重建 403", r.status_code == 403)
-        c.put(f"{GATEWAY}/api/v1/admin/docs/{doc_id}/security", headers=admin_h,
-              data={"classification": "0"})  # 复位
+        restore = {"classification": str(orig_cls)}
+        if orig_dept:
+            restore["owner_dept"] = orig_dept
+        c.put(f"{GATEWAY}/api/v1/admin/docs/{doc_id}/security",
+              headers=admin_h, data=restore)  # 精确还原原始密级
 
     # ---- 5) 检索四模式 ----
     if fresh:

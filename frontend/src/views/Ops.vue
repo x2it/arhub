@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { api, authHeaders } from '../api'
+import { api, authFetch, readError } from '../api'
 
 const ready = ref<any>(null)
 const stats = ref<any>(null)
@@ -21,12 +21,13 @@ async function runBackup() {
   busy.value = true
   backupMsg.value = ''
   try {
-    const res = await fetch('/api/v1/admin/backup', {
-      method: 'POST',
-      headers: authHeaders(),
-    })
+    const res = await authFetch('/api/v1/admin/backup', { method: 'POST' })
+    if (!res.ok) {
+      backupMsg.value = `❌ ${await readError(res)}`
+      return
+    }
     const data = await res.json().catch(() => ({}))
-    backupMsg.value = res.ok ? `✅ ${data.message || '备份完成'}` : `❌ ${data.detail || '失败'}`
+    backupMsg.value = `✅ ${data.message || '备份完成'}`
   } catch (e: any) {
     backupMsg.value = `❌ ${e.message}`
   } finally {
