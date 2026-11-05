@@ -43,7 +43,10 @@ from gateway.deps import (
 )
 from gateway.errors import install_error_handlers
 from gateway.middleware import RateLimitMiddleware, RequestContextMiddleware, bind_actor
-from gateway.schemas import LoginResponse, SearchHit, SearchResponse, TaskAccepted
+from gateway.schemas import (
+    ContentPatchRequest, ContentPatchResponse, LoginResponse,
+    SearchHit, SearchResponse, TaskAccepted,
+)
 from gateway.security import (
     ROLE_ADMIN,
     ROLE_ARCHIVIST,
@@ -591,6 +594,39 @@ async def get_document(doc_id: int, request: Request, content: bool = True,
         latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
         tenant_id=s.tenant_id)
     return data
+
+
+@app.patch("/api/v1/documents/{doc_id}/content", response_model=ContentPatchResponse)
+async def patch_document_content(doc_id: int, body: ContentPatchRequest, request: Request,
+                                 u: UserCtx = Depends(current_user)):
+    """补录/修订 OCR 正文，并异步重建语义向量。
+
+    翻拍屏幕、浅色压纹、图案照片这类原件没有可二值化的印刷笔画：
+    Tesseract 只产出乱码碎片，OCRmyPDF 会丢弃低置信度结果，content 为空
+    是预期行为而非内容丢失。此处允许档案员补一段描述，写入 Paperless 后
+    入队 index_tasks，让这类素材同样能被全文 / 语义检索命中。
+    """
+    rid = request_id_var.get()
+    t0 = time.perf_counter()
+    if not has_role(u.roles, ROLE_ARCHIVIST, ROLE_ADMIN):
+        raise HTTPException(status_code=403, detail="需要档案员或管理员权限")
+    try:
+        sec = await require_view_one(u, doc_id)  # fail-closed：无密级记录=404
+    except HTTPException as e:
+        await _deny_audit(request, u, "update_content", doc_id, e.status_code, t0)
+        raise
+    text = body.content.strip()
+    await up.pl_patch(f"/api/documents/{doc_id}/", {"content": text})
+    with get_pg() as conn:
+        conn.execute("INSERT INTO archive.index_tasks(doc_id,op) VALUES (%s,'upsert')", (doc_id,))
+    await audit_mod.write_audit(
+        request_id=rid, actor_id=u.id, actor_name=u.username, actor_roles=u.roles,
+        action="update_content", resource_type="document", resource_id=str(doc_id),
+        classification=sec["classification"], decision="allow", status_code=200,
+        latency_ms=int((time.perf_counter() - t0) * 1000), ip=_client_ip(request),
+        tenant_id=s.tenant_id)
+    return ContentPatchResponse(doc_id=doc_id, content_length=len(text),
+                                reindexed=True, request_id=rid)
 
 
 @app.get("/api/v1/documents/{doc_id}/download")

@@ -11,11 +11,15 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/$PKG_DIR"
 
+# media/ 是运行时上传目录，会含用户实际扫描件，绝不能进公开分发包；
+# 演示档案由 export/ + scripts/restore-demo.sh 提供，up.sh 会自动重建空 media/。
 echo "==> 收集源码（排除密钥与运行时数据）"
 tar -C "$ROOT" \
   --exclude='./.git' \
   --exclude='./.env' \
   --exclude='./data' \
+  --exclude='./media' \
+  --exclude='./consume' \
   --exclude='./hf-cache' \
   --exclude='./backups' \
   --exclude='./logs' \
@@ -39,7 +43,7 @@ FILE_COUNT=$(find "$STAGE/$PKG_DIR" -type f | wc -l)
   echo "顶层目录 : $PKG_DIR/"
   echo "文件数量 : $FILE_COUNT"
   echo "内含     : 完整源码 / docker-compose / migrations / 前端 dist / 脚本 / 中文 OCR 包 / 8 份演示档案 / 文档"
-  echo "不含     : .env、data/、hf-cache/、backups/、logs/、.git/、node_modules/、任何凭据与 dump"
+  echo "不含     : .env、data/、media/、consume/、hf-cache/、backups/、logs/、.git/、node_modules/、任何凭据与 dump"
   echo "部署     : 解压后 cd $PKG_DIR && bash scripts/up.sh"
   echo "详见     : DEPLOY.md"
   echo ""
@@ -54,8 +58,8 @@ cp "$ROOT/deploy/bootstrap.sh" "$OUT_DIR/bootstrap.txt"
 chmod +x "$ROOT/scripts/"*.sh "$OUT_DIR/bootstrap.txt" 2>/dev/null || true
 
 # 敏感文件兜底检查：出现即判失败，绝不外发
-if tar -tzf "$OUT_DIR/$NAME.bundle" | grep -E '(^|/)\.env$|admin_credentials|\.dump$|\.pem$|id_rsa|(^|/)hf-cache/|(^|/)data/' ; then
-  echo "!! 包内含敏感文件，已中止并删除产物" >&2
+if tar -tzf "$OUT_DIR/$NAME.bundle" | grep -E '(^|/)\.env$|admin_credentials|\.dump$|\.pem$|id_rsa|(^|/)hf-cache/|(^|/)data/|(^|/)media/|(^|/)consume/' ; then
+  echo "!! 包内含敏感文件（含运行时上传目录），已中止并删除产物" >&2
   rm -f "$OUT_DIR/$NAME.bundle" "$OUT_DIR/$NAME.sha256"
   exit 1
 fi

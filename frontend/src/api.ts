@@ -140,6 +140,20 @@ export function consumeRedirect(): string | null {
 
 export const CLASS_NAMES = ['公开', '内部', '秘密', '机密']
 
+/** 补录/修订 OCR 正文：写入 Paperless 后异步重建语义索引。
+ *  用于「原件本身没有印刷文字」的素材（翻拍屏幕、浅压纹、照片图案），
+ *  让这类档案也能被全文与语义检索命中，而不是永远查不到。 */
+export async function patchContent(
+  docId: string | number,
+  content: string,
+): Promise<{ content_length: number; reindexed: boolean }> {
+  return api(`/api/v1/documents/${docId}/content`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+}
+
 /** 统一下载：走 authFetch（三通道鉴权 + 401 统一登出），并按响应头还原文件名。
  *  裸 `<a href>` 只能带 cookie，在公共反代下容易 401，且登录态过期时不会
  *  触发统一跳登录，用户只会得到一个空文件或错误页。 */

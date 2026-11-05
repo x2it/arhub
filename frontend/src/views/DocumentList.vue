@@ -169,8 +169,8 @@ onMounted(search)
       </div>
       <!-- OCR 为空必须显式告知：档案已入库，但内容没识别出来，不是「内容丢失」 -->
       <p v-if="r.ocr_empty" class="ocr-empty">
-        ⚠ 未识别到文字（正文 {{ r.content_length ?? 0 }} 字）。该档案已入库，但可能是空白页、
-        翻拍屏幕或文字过淡；建议重拍，或在采集页改用「仅裁边校正 / 原图」重新上传。
+        ⚠ 未识别到文字（正文 {{ r.content_length ?? 0 }} 字）。该档案已入库，原件可能是浅色压纹、
+        翻拍屏幕或图案照片，本身没有可识别的印刷笔画；建议重拍，或在详情页「补录正文」写一段描述使其可被检索。
       </p>
       <p v-if="r.snippet" class="snip">{{ r.snippet }}</p>
       <p v-if="r.highlights" class="snip" style="border-left-color: var(--warn)">

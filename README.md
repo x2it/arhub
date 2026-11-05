@@ -1,6 +1,6 @@
 # 档枢 ArcHub · 智能档案中枢
 
-**Current version / 当前版本：2.0.0**（源自 [CHANGELOG.md](CHANGELOG.md)）
+**Current version / 当前版本：2.2.1**（源自 [CHANGELOG.md](CHANGELOG.md)）
 
 > **让每一份档案，都可被找到。**
 >
@@ -186,7 +186,7 @@ bash scripts/up.sh               # 生成密钥 → 拉镜像 → 预载模型 �
 
 > 源码仓库不含构建产物 `frontend/dist/`：`up.sh` 检测到缺失时会自动执行
 > `pnpm install && pnpm build`（需 Node 22 + pnpm）。想完全免构建，可直接用
-> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.2.0) 里的分发包（已自带 dist）。
+> [Release 附件](https://github.com/x2it/arhub/releases/tag/v2.2.1) 里的分发包（已自带 dist）。
 
 | 入口 | 地址 |
 |---|---|

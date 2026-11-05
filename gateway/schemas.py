@@ -70,3 +70,15 @@ class TaskAccepted(BaseModel):
     status: str = "accepted"
     task_id: Optional[int] = None
     request_id: str
+
+
+class ContentPatchRequest(BaseModel):
+    """补录/修订 OCR 正文。允许空串（清空补录内容，回到原始 OCR 状态）。"""
+    content: str = Field(..., max_length=20000)
+
+
+class ContentPatchResponse(BaseModel):
+    doc_id: int
+    content_length: int
+    reindexed: bool = True
+    request_id: str

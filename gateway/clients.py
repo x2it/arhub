@@ -142,6 +142,21 @@ class Upstreams:
         except httpx.TransportError as e:
             raise UpstreamError(503, "paperless_unavailable", "档案服务暂不可用，上传未入队") from e
 
+    async def pl_patch(self, path: str, payload: dict) -> dict:
+        """PATCH Paperless 文档字段（补录/修订 OCR 正文）。
+
+        与 pl_get 一致：4xx 立即转结构化错误、连接异常转 503，避免写操作
+        在失败时留下「界面提示成功但库里没变」的假象。
+        """
+        try:
+            r = await self.pl.patch(path, headers=self.pl_headers(), json=payload)
+        except httpx.TransportError as e:
+            raise UpstreamError(503, "paperless_unavailable", "档案服务暂不可用，正文未保存") from e
+        if r.status_code >= 400:
+            raise UpstreamError(502, "paperless_error",
+                                f"档案服务返回错误({r.status_code})") from None
+        return r.json()
+
     # ---------- Semantic（带熔断）----------
     async def sem_request(self, method: str, path: str, **kw) -> dict:
         if not self.semantic_breaker.allow():
