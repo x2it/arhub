@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, CLASS_NAMES, downloadFile, getUser, ocrReprocess, patchContent } from '../api'
+import { copyText } from '../clipboard'
 import PreviewPane from '../components/PreviewPane.vue'
 
 const route = useRoute()
@@ -10,6 +11,8 @@ const err = ref('')
 const busy = ref(true)
 const downloading = ref(false)
 const actionErr = ref('')
+const copying = ref(false)
+const copyMsg = ref('')
 
 const ocrEmpty = computed(() => !doc.value || !(doc.value.content || '').trim())
 const canEditContent = computed(() => {
@@ -95,6 +98,50 @@ async function reprocess() {
     reprocessing.value = false
   }
 }
+
+/** 从检索结果跳入时携带 ?q=，在正文里高亮命中词（同类产品的标准能力）。 */
+const hlQuery = computed(() => (route.query.q as string) || '')
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function highlightHtml(text: string, query: string): string {
+  const safe = escapeHtml(text)
+  const terms = query.trim().split(/\s+/).filter(Boolean).map(escapeHtml)
+  if (!terms.length) return safe
+  const re = new RegExp(
+    '(' + terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')',
+    'gi',
+  )
+  return safe.replace(re, '<mark>$1</mark>')
+}
+const ocrHtml = computed(() => {
+  const text = doc.value?.content || ''
+  if (!text.trim()) return '（暂无 OCR 文本，请查看左侧原件预览）'
+  return highlightHtml(text, hlQuery.value)
+})
+
+/** 一键复制识别全文到剪贴板（HTTP 内网会自动降级为 execCommand）。 */
+async function copyAll() {
+  if (copying.value || ocrEmpty.value) return
+  copying.value = true
+  copyMsg.value = ''
+  try {
+    const ok = await copyText(doc.value?.content || '')
+    copyMsg.value = ok ? '已复制全文到剪贴板' : '复制失败，可手动选中文本复制'
+  } catch {
+    copyMsg.value = '复制失败，可手动选中文本复制'
+  } finally {
+    copying.value = false
+  }
+}
+
+/** 复制指向本档案的链接，便于在内网粘贴分享。 */
+function copyLink() {
+  const link = location.origin + location.pathname + location.search + '#/doc/' + route.params.id
+  copyText(link).then((ok) => {
+    copyMsg.value = ok ? '档案链接已复制到剪贴板' : '复制失败，可手动复制地址栏'
+  })
+}
 </script>
 
 <template>
@@ -140,9 +187,15 @@ async function reprocess() {
         <div class="card">
           <div class="row ocr-head">
             <h3 class="card-title">🔤 OCR 全文</h3>
-            <button v-if="canEditContent && !editing" class="btn" @click="startEdit">
-              {{ ocrEmpty ? '补录正文' : '编辑正文' }}
-            </button>
+            <div class="ocr-actions">
+              <button class="btn" :disabled="copying || ocrEmpty" @click="copyAll">
+                {{ copying ? '复制中…' : '复制全文' }}
+              </button>
+              <button class="btn" @click="copyLink">复制链接</button>
+              <button v-if="canEditContent && !editing" class="btn" @click="startEdit">
+                {{ ocrEmpty ? '补录正文' : '编辑正文' }}
+              </button>
+            </div>
           </div>
           <template v-if="editing">
             <textarea
@@ -158,8 +211,9 @@ async function reprocess() {
               <button class="btn" :disabled="saving" @click="editing = false">取消</button>
             </div>
           </template>
-          <pre v-else class="ocr-text">{{ doc.content || '（暂无 OCR 文本，请查看左侧原件预览）' }}</pre>
+          <pre v-else class="ocr-text" v-html="ocrHtml"></pre>
           <p v-if="contentMsg" class="content-msg">{{ contentMsg }}</p>
+          <p v-if="copyMsg" class="content-msg">{{ copyMsg }}</p>
         </div>
       </div>
     </template>
@@ -185,6 +239,10 @@ async function reprocess() {
 .ocr-head { justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .ocr-head .card-title { margin: 0; }
 .ocr-head .btn { min-height: 34px; }
+.ocr-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.ocr-text mark {
+  background: #fff1a8; color: inherit; padding: 0 1px; border-radius: 2px;
+}
 .content-editor {
   width: 100%; box-sizing: border-box; min-height: 180px; resize: vertical;
   padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.7;

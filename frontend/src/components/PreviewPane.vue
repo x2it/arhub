@@ -8,6 +8,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { authFetch, downloadFile, readError } from '../api'
+import { copyImageBlob, downloadBlob, blobToPng } from '../clipboard'
 
 const props = defineProps<{ docId: string | number }>()
 
@@ -19,6 +20,7 @@ const loading = ref(false)
 const err = ref('')
 const originalMime = ref('')
 const zoomed = ref(false)
+const copyMsg = ref('')
 const scale = ref(1)
 const pageInput = ref('1')
 
@@ -90,6 +92,27 @@ function bump(delta: number) {
   scale.value = Math.min(3, Math.max(0.6, +(scale.value + delta).toFixed(2)))
 }
 
+/** 复制当前预览图（归档版 / 拍摄原件）到剪贴板；非安全上下文降级为下载。 */
+async function copyImage() {
+  if (!imgUrl.value) return
+  copyMsg.value = ''
+  try {
+    const res = await authFetch(
+      `/api/v1/documents/${props.docId}/preview?page=${page.value}&src=${src.value}`)
+    if (!res.ok) throw new Error(await readError(res))
+    const png = await blobToPng(await res.blob())
+    const ok = await copyImageBlob(png)
+    if (ok) {
+      copyMsg.value = '图片已复制到剪贴板'
+    } else {
+      downloadBlob(png, `arhub-${props.docId}-${src.value}.png`)
+      copyMsg.value = '当前环境不支持复制到剪贴板，已改为下载图片'
+    }
+  } catch (e: any) {
+    copyMsg.value = e.message
+  }
+}
+
 onMounted(load)
 onBeforeUnmount(() => { if (objectUrl) URL.revokeObjectURL(objectUrl) })
 watch(() => props.docId, () => { page.value = 1; scale.value = 1; load() })
@@ -114,6 +137,7 @@ watch(() => props.docId, () => { page.value = 1; scale.value = 1; load() })
       <span v-else class="pv-muted pv-single">单页</span>
 
       <div class="pv-actions">
+        <button class="pv-btn" :disabled="!imgUrl" @click="copyImage">复制图片</button>
         <button class="pv-btn" :disabled="!imgUrl" @click="openZoom">放大</button>
         <button class="pv-btn" @click="doDownload">下载{{ src === 'original' ? '原件' : '归档版' }}</button>
       </div>
@@ -129,6 +153,8 @@ watch(() => props.docId, () => { page.value = 1; scale.value = 1; load() })
         v-if="imgUrl" :src="imgUrl" class="pv-img" :class="{ dim: loading }"
         alt="档案原件预览" @click="openZoom" />
     </div>
+
+    <p v-if="copyMsg" class="pv-copy-msg">{{ copyMsg }}</p>
 
     <p class="pv-foot">
       在线预览由服务端渲染为图片，不依赖浏览器 PDF 插件；多页文档可翻页，点击图片放大。
@@ -185,6 +211,7 @@ watch(() => props.docId, () => { page.value = 1; scale.value = 1; load() })
 .pv-placeholder { color: var(--muted, #5b6b7c); font-size: 13px; padding: 40px 0; }
 .pv-error { padding: 18px; color: #92400e; font-size: 13px; line-height: 1.7; text-align: center; }
 .pv-error-hint { margin-top: 6px; color: var(--muted, #5b6b7c); font-size: 12px; }
+.pv-copy-msg { margin: 0; font-size: 12px; line-height: 1.6; color: #166534; }
 .pv-foot { margin: 0; font-size: 12px; line-height: 1.7; color: var(--muted, #5b6b7c); }
 .pv-foot .pv-muted { display: block; margin-top: 2px; }
 

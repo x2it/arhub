@@ -94,6 +94,13 @@ function gotoPage(p: number) {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+/** 跳详情时带上检索词，使详情页正文高亮命中（浏览模式无检索词则不带）。 */
+function detailTo(r: any): string {
+  const base = `/doc/${r.doc_id}`
+  if (!browsing.value && q.value.trim()) return `${base}?q=${encodeURIComponent(q.value.trim())}`
+  return base
+}
+
 // v-html 白名单清洗：仅保留 <mark> 高亮标签，其余全部剥离（防 XSS）
 function sanitized(html: string): string {
   const div = document.createElement('div')
@@ -180,7 +187,7 @@ onMounted(search)
         <span>{{ browsing ? '浏览' : '命中: ' + (r.matched_by || [r.source]).join(' + ') }}</span>
         <span v-if="r.rrf_score">RRF {{ r.rrf_score }}</span>
         <span v-else-if="r.score">score {{ r.score }}</span>
-        <router-link :to="`/doc/${r.doc_id}`" style="margin-left: auto">查看详情 →</router-link>
+        <router-link :to="detailTo(r)" style="margin-left: auto">查看详情 →</router-link>
       </div>
     </div>
 
